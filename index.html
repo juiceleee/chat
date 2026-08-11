@@ -89,13 +89,14 @@
   }
   .toolbar .close:hover { color: var(--text); background: #fff; }
 
-  /* 좁은 화면: 대화 줄을 세로로 쌓기 */
+  /* 좁은 화면: 작성자+시간은 윗줄, 내용은 아랫줄. 메시지 간 간격은 넉넉히 */
   @media (max-width: 520px) {
     .toolbar .menu { display: none; }
-    .page { padding: 18px 14px; }
-    .line { flex-direction: column; gap: 1px; padding: 5px 6px; }
+    .page { padding: 18px 14px; gap: 12px; }
+    .line { flex-wrap: wrap; column-gap: 8px; row-gap: 2px; padding: 4px 6px; }
     .line .author { min-width: 0; }
-    .line .ts { align-self: flex-start; }
+    .line .ts { order: 2; align-self: center; }
+    .line .content { order: 3; flex: 1 1 100%; }
   }
   .page {
     flex: 1; overflow-y: auto; padding: 26px 22px;

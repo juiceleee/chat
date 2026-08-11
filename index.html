@@ -3,7 +3,7 @@
 <head>
 <meta charset="UTF-8" />
 <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-<title>실적_분석.xlsx</title>
+<title>Excel</title>
 <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16'><rect width='16' height='16' rx='2' fill='%23217346'/><rect x='3' y='3' width='10' height='10' fill='white'/><path d='M5.5 5 L8 8 L5.5 11 M10.5 5 L8 8 L10.5 11' stroke='%23217346' stroke-width='1.2' fill='none'/></svg>" />
 <style>
   :root {
@@ -103,16 +103,17 @@
     background: var(--hdr); color: #666; font-weight: 600; text-align: center;
     height: 22px; font-size: 0.8em;
   }
+  col.col-num { width: 42px; }
+  col.col-a { width: 46%; }
   th.corner { width: 42px; }
   td.rownum {
-    width: 42px; background: var(--hdr); color: #666; text-align: center;
+    background: var(--hdr); color: #666; text-align: center;
     font-weight: 600; font-size: 0.78em; vertical-align: top; padding: 5px 0;
     position: sticky; left: 0;
   }
-  td.c-author { width: 100px; font-weight: 600; color: #1f2937; padding: 5px 8px; vertical-align: top; white-space: nowrap; }
-  tr.me td.c-author { color: #1d4ed8; }
-  td.c-content { padding: 5px 8px; vertical-align: top; white-space: pre-wrap; word-wrap: break-word; overflow-wrap: anywhere; }
-  td.c-time { width: 66px; color: #9aa0a6; font-size: 0.78em; text-align: right; padding: 5px 8px; vertical-align: top; white-space: nowrap; }
+  td.c-a { padding: 5px 9px; vertical-align: top; color: #111; white-space: pre-wrap; word-wrap: break-word; overflow-wrap: anywhere; }
+  tr.namerow td.c-a { font-weight: 700; }
+  tr.timerow td.c-a { color: #9aa0a6; font-size: 0.82em; }
   tr.row:hover td { background: #f4f8f5; }
   tr.row:hover td.rownum { background: #e8efe9; }
 
@@ -161,7 +162,6 @@
   <!-- 스프레드시트 (채팅) -->
   <div id="sheet">
     <div class="xl-menu">
-      <span class="fname">실적_분석.xlsx</span>
       <span class="tabs">
         <span class="active">홈</span><span>삽입</span><span>페이지 레이아웃</span>
         <span>수식</span><span>데이터</span><span>검토</span><span>보기</span>
@@ -183,12 +183,15 @@
 
     <div class="grid">
       <table class="sheet">
+        <colgroup>
+          <col class="col-num" />
+          <col class="col-a" />
+          <col /><col /><col />
+        </colgroup>
         <thead>
           <tr>
             <th class="corner"></th>
-            <th style="width:100px">A</th>
-            <th>B</th>
-            <th style="width:66px">C</th>
+            <th>A</th><th>B</th><th>C</th><th>D</th>
           </tr>
         </thead>
         <tbody id="rows"></tbody>
@@ -275,8 +278,8 @@
     let cryptoKey = null;
     let myName = "";
     let unsubscribe = null;
-    let rowCount = 0;
     let lastSender = null;
+    let currentTimeRow = null;
 
     async function openBook() {
       const name = $("name").value.trim();
@@ -299,28 +302,52 @@
           if (change.type !== "added") continue;
           const d = change.doc.data();
           const text = await decryptText(cryptoKey, d.iv, d.ct);
-          renderRow(d.sender, text, d.createdAt, d.sender === myName);
+          renderRow(d.sender, text, d.createdAt);
         }
+        renumber();
         gridEl.scrollTop = gridEl.scrollHeight;
       });
     }
 
-    function renderRow(sender, text, ts, isMe) {
-      rowCount += 1;
-      const time = ts?.toDate ? ts.toDate() : new Date();
-      const hh = String(time.getHours()).padStart(2, "0");
-      const mm = String(time.getMinutes()).padStart(2, "0");
-      // 같은 사람이 연속으로 보내면 이름은 첫 행에만 표시
-      const showName = sender !== lastSender;
-      lastSender = sender;
+    // 시트 행 하나 추가 (행번호 + A열 내용 + 빈 B/C/D 셀)
+    function appendRow(aHtml, cls) {
       const tr = document.createElement("tr");
-      tr.className = "row" + (isMe ? " me" : "");
+      tr.className = "row" + (cls ? " " + cls : "");
       tr.innerHTML =
-        `<td class="rownum">${rowCount}</td>` +
-        `<td class="c-author">${showName ? escapeHtml(sender) : ""}</td>` +
-        `<td class="c-content">${escapeHtml(text)}</td>` +
-        `<td class="c-time">${hh}:${mm}</td>`;
+        `<td class="rownum"></td>` +
+        `<td class="c-a">${aHtml}</td>` +
+        `<td></td><td></td><td></td>`;
       rowsEl.appendChild(tr);
+      return tr;
+    }
+
+    function renumber() {
+      let i = 0;
+      for (const tr of rowsEl.children) {
+        tr.firstElementChild.textContent = ++i;
+      }
+    }
+
+    function timeStr(d) {
+      let h = d.getHours();
+      const m = String(d.getMinutes()).padStart(2, "0");
+      const ap = h < 12 ? "오전" : "오후";
+      h = h % 12; if (h === 0) h = 12;
+      return `${ap} ${h}:${m}`;
+    }
+
+    function renderRow(sender, text, ts) {
+      const time = ts?.toDate ? ts.toDate() : new Date();
+      // 새 발신자면 이름 행을 먼저 추가하고, 시간 행은 그룹마다 새로 시작
+      if (sender !== lastSender) {
+        appendRow(`${escapeHtml(sender)}:`, "namerow");
+        lastSender = sender;
+        currentTimeRow = null;
+      }
+      // 같은 그룹이면 기존 시간 행을 잠시 제거했다가 메시지 뒤에 다시 붙임
+      if (currentTimeRow) { currentTimeRow.remove(); currentTimeRow = null; }
+      appendRow(escapeHtml(text), "msgrow");
+      currentTimeRow = appendRow(timeStr(time), "timerow");
     }
 
     function escapeHtml(s) {
@@ -344,8 +371,8 @@
       if (unsubscribe) unsubscribe();
       sessionStorage.removeItem("book");
       rowsEl.innerHTML = "";
-      rowCount = 0;
       lastSender = null;
+      currentTimeRow = null;
       sheetEl.style.display = "none";
       loginEl.style.display = "block";
     }

@@ -276,6 +276,7 @@
     let myName = "";
     let unsubscribe = null;
     let rowCount = 0;
+    let lastSender = null;
 
     async function openBook() {
       const name = $("name").value.trim();
@@ -309,17 +310,17 @@
       const time = ts?.toDate ? ts.toDate() : new Date();
       const hh = String(time.getHours()).padStart(2, "0");
       const mm = String(time.getMinutes()).padStart(2, "0");
+      // 같은 사람이 연속으로 보내면 이름은 첫 행에만 표시
+      const showName = sender !== lastSender;
+      lastSender = sender;
       const tr = document.createElement("tr");
       tr.className = "row" + (isMe ? " me" : "");
       tr.innerHTML =
         `<td class="rownum">${rowCount}</td>` +
-        `<td class="c-author">${escapeHtml(sender)}</td>` +
+        `<td class="c-author">${showName ? escapeHtml(sender) : ""}</td>` +
         `<td class="c-content">${escapeHtml(text)}</td>` +
         `<td class="c-time">${hh}:${mm}</td>`;
       rowsEl.appendChild(tr);
-      // 수식 표시줄에 최근 내용 표시 (위장 강화)
-      $("cellRef").textContent = "B" + rowCount;
-      $("fcontent").textContent = text;
     }
 
     function escapeHtml(s) {
@@ -344,8 +345,7 @@
       sessionStorage.removeItem("book");
       rowsEl.innerHTML = "";
       rowCount = 0;
-      $("fcontent").textContent = "";
-      $("cellRef").textContent = "A1";
+      lastSender = null;
       sheetEl.style.display = "none";
       loginEl.style.display = "block";
     }

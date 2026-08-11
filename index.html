@@ -113,7 +113,7 @@
   }
   td.c-a { padding: 5px 9px; vertical-align: top; color: #111; white-space: pre-wrap; word-wrap: break-word; overflow-wrap: anywhere; }
   tr.namerow td.c-a { font-weight: 700; }
-  tr.timerow td.c-a { color: #9aa0a6; font-size: 0.82em; }
+  .msgtime { color: #9aa0a6; font-size: 0.8em; margin-left: 8px; white-space: nowrap; }
   tr.row:hover td { background: #f4f8f5; }
   tr.row:hover td.rownum { background: #e8efe9; }
 
@@ -342,9 +342,8 @@
         appendRow(`${escapeHtml(sender)}:`, "namerow");
         lastSender = sender;
       }
-      // 메시지마다 바로 아래에 시간 행 표시
-      appendRow(escapeHtml(text), "msgrow");
-      appendRow(timeStr(time), "timerow");
+      // 메시지 텍스트 옆에 시간 표시
+      appendRow(`${escapeHtml(text)}<span class="msgtime">${timeStr(time)}</span>`, "msgrow");
     }
 
     function escapeHtml(s) {

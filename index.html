@@ -299,6 +299,8 @@
       ta.style.height = Math.min(ta.scrollHeight, 120) + "px";
     });
     ta.addEventListener("keydown", (e) => {
+      // 한글/일본어 등 IME 조합 중에는 Enter를 전송으로 처리하지 않음 (마지막 글자 중복 방지)
+      if (e.isComposing || e.keyCode === 229) return;
       if (e.key === "Enter" && !e.shiftKey) { e.preventDefault(); addLine(); }
     });
 
@@ -306,7 +308,10 @@
     $("add").addEventListener("click", addLine);
     $("close").addEventListener("click", closeDoc);
     ["name", "pass"].forEach((id) =>
-      $(id).addEventListener("keydown", (e) => { if (e.key === "Enter") openDoc(); }));
+      $(id).addEventListener("keydown", (e) => {
+        if (e.isComposing || e.keyCode === 229) return;
+        if (e.key === "Enter") openDoc();
+      }));
 
     const saved = sessionStorage.getItem("doc");
     if (saved && isConfigured) {

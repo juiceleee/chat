@@ -279,7 +279,6 @@
     let myName = "";
     let unsubscribe = null;
     let lastSender = null;
-    let currentTimeRow = null;
 
     async function openBook() {
       const name = $("name").value.trim();
@@ -338,16 +337,14 @@
 
     function renderRow(sender, text, ts) {
       const time = ts?.toDate ? ts.toDate() : new Date();
-      // 새 발신자면 이름 행을 먼저 추가하고, 시간 행은 그룹마다 새로 시작
+      // 새 발신자면 이름 행을 먼저 추가 (같은 사람 연속이면 이름 생략)
       if (sender !== lastSender) {
         appendRow(`${escapeHtml(sender)}:`, "namerow");
         lastSender = sender;
-        currentTimeRow = null;
       }
-      // 같은 그룹이면 기존 시간 행을 잠시 제거했다가 메시지 뒤에 다시 붙임
-      if (currentTimeRow) { currentTimeRow.remove(); currentTimeRow = null; }
+      // 메시지마다 바로 아래에 시간 행 표시
       appendRow(escapeHtml(text), "msgrow");
-      currentTimeRow = appendRow(timeStr(time), "timerow");
+      appendRow(timeStr(time), "timerow");
     }
 
     function escapeHtml(s) {
@@ -372,7 +369,6 @@
       sessionStorage.removeItem("book");
       rowsEl.innerHTML = "";
       lastSender = null;
-      currentTimeRow = null;
       sheetEl.style.display = "none";
       loginEl.style.display = "block";
     }

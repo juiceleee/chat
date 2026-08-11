@@ -6,7 +6,8 @@
 
 - 실시간 채팅 (Firestore 실시간 구독)
 - 종단간 암호화 (공유 비밀번호 기반 AES-GCM)
-- 비밀 방 코드 (아는 사람만 입장)
+- **단일 방 고정**: 방 이름을 코드에 숨겨 박아두고, 화면엔 이름 + 암호만 입력
+- **위장 UI**: "보호된 문서 / 회의록" 처럼 보이는 문서 앱 테마
 - 서버 코드 불필요 (파일 1개짜리 정적 사이트)
 
 ---
@@ -18,7 +19,7 @@
 3. `index.html`에 그 값 붙여넣기
 4. Firestore 보안 규칙 설정
 5. GitHub 저장소 만들고 GitHub Pages로 배포
-6. 친구에게 `주소 + 방 코드 + 비밀번호` 공유
+6. 친구에게 `주소 + 문서 암호` 공유 (방 이름은 코드에 고정돼 있어 공유 불필요)
 
 ---
 
@@ -67,27 +68,36 @@ const firebaseConfig = {
 테스트 모드는 30일 뒤 막히고 아무나 접근 가능하므로 규칙을 바꿉니다.
 Firebase 콘솔 → **Firestore Database → 규칙** 탭에서 아래로 교체 후 **게시**:
 
+아래 규칙은 **`index.html`에 박아둔 단일 방(`sjchat-private-2026`)만 허용**합니다.
+다른 방 이름으로는 읽기/쓰기가 모두 거부되므로 제3자가 새 방을 만들 수 없습니다.
+
 ```
 rules_version = '2';
 service cloud.firestore {
   match /databases/{database}/documents {
     match /rooms/{room}/messages/{msg} {
-      // 메시지는 암호화되어 저장되고, 내용 형식만 검증
-      allow read: if true;
-      allow create: if request.resource.data.keys().hasOnly(['sender','iv','ct','createdAt'])
+      // 코드에 고정된 방 하나만 허용
+      allow read: if room == 'sjchat-private-2026';
+      allow create: if room == 'sjchat-private-2026'
+                    && request.resource.data.keys().hasOnly(['sender','iv','ct','createdAt'])
                     && request.resource.data.sender is string
                     && request.resource.data.iv is string
                     && request.resource.data.ct is string
                     && request.resource.data.ct.size() < 20000;
       allow update, delete: if false;
     }
+    // 그 외 모든 경로 거부
+    match /{document=**} {
+      allow read, write: if false;
+    }
   }
 }
 ```
 
-> 방 코드는 URL이 아니라 입력값이라 남에게 노출되지 않고, 설령 누가 읽어도
-> 내용은 공유 비밀번호로 암호화돼 있어 복호화가 불가능합니다.
-> 더 엄격히 하려면 Firebase Authentication을 추가할 수 있습니다.
+> - 방 이름(`sjchat-private-2026`)은 `index.html`에 고정돼 있고 화면에 노출되지 않습니다.
+> - 위 규칙 덕분에 다른 방 이름으로는 아무것도 저장/조회할 수 없습니다.
+> - 설령 이 방 이름이 알려져도, 메시지는 공유 암호로 암호화돼 있어 내용은 복호화 불가입니다.
+> - 방 이름을 바꾸고 싶으면 `index.html`의 `ROOM_ID`와 이 규칙의 값을 **똑같이** 바꾸세요.
 
 ## 5. GitHub Pages로 배포
 
@@ -114,12 +124,16 @@ git push -u origin main
 
 ## 6. 친구와 공유
 
-친구에게 아래 3가지를 알려주세요:
-- 사이트 주소 (`https://....github.io/...`)
-- **방 코드** (둘이 똑같이 입력)
-- **공유 비밀번호** (둘이 똑같이 입력, 이게 다르면 메시지가 안 풀립니다)
+친구에게 아래 2가지만 알려주세요:
+- 사이트 주소 (`https://juiceleee.github.io/chat/`)
+- **문서 암호** (둘이 똑같이 입력, 이게 다르면 메시지가 안 풀립니다)
 
-둘 다 같은 방 코드 + 비밀번호로 입장하면 실시간으로 대화됩니다.
+방 이름은 `index.html`에 고정돼 있어 따로 공유할 필요가 없습니다.
+"작성자"에는 각자 원하는 이름을 넣고, **문서 암호만 동일하게** 입력하면 실시간으로 대화됩니다.
+
+> UI는 "보호된 문서 → 회의록.docx" 처럼 보이도록 위장돼 있습니다.
+> 대화 내용은 문서의 여러 줄처럼 표시되고, 상단엔 파일/편집/보기 메뉴가 있어
+> 곁눈질로는 일반 문서 편집기처럼 보입니다.
 
 ---
 

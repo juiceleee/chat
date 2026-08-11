@@ -334,6 +334,7 @@
     function applyFont() {
       fontSize = Math.max(11, Math.min(26, fontSize));
       pageEl.style.fontSize = fontSize + "px";
+      $("text").style.fontSize = fontSize + "px";
       $("fontSize").textContent = fontSize;
       localStorage.setItem("chatFont", String(fontSize));
     }

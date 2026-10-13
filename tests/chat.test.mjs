@@ -163,6 +163,39 @@ test("알림은 기본 꺼짐, 방별 설정 저장, 직접 켤 때만 권한 �
   assert.equal(app.get("notificationToast").hidden, true);
 });
 
+test("알림 켜기에서 권한을 직접 요청하고 허용·차단·미결정을 구분해 안내", async () => {
+  for (const result of ["granted", "denied", "default"]) {
+    const app = createApp();
+    app.context.Notification.permission = "default";
+    let completePermission;
+    app.context.Notification.requestPermission = () => new Promise(resolve => {
+      completePermission = () => {
+        app.context.Notification.permission = result;
+        resolve(result);
+      };
+    });
+    await app.open("old-pass");
+    assert.equal(completePermission, undefined);
+    const enabling = app.get("notificationsToggle").events.click();
+    assert.equal(typeof completePermission, "function");
+    assert.match(app.get("notificationToastText").textContent, /‘허용’을 눌러/);
+    completePermission();
+    await enabling;
+    const notice = app.get("notificationToastText").textContent;
+    if (result === "granted") assert.match(notice, /컴퓨터 배너 알림을 켰습니다/);
+    if (result === "denied") assert.match(notice, /차단되어.*사이트 설정/);
+    if (result === "default") assert.match(notice, /아직 허용되지 않았습니다/);
+    assert.equal(app.writes.length, 0);
+    assert.equal(app.get("notificationsToggle").attributes["aria-checked"], "true");
+  }
+  const blocked = createApp();
+  blocked.context.Notification.permission = "denied";
+  await blocked.open("old-pass");
+  await blocked.get("notificationsToggle").events.click();
+  assert.equal(blocked.permissionRequests, 0);
+  assert.match(blocked.get("notificationToastText").textContent, /차단되어/);
+});
+
 test("캐시·최초 서버 기록은 조용히 읽고 이후 새 글·이모티콘에는 화면 배너 표시", async () => {
   const app = createApp();
   await app.open("second-test-password");

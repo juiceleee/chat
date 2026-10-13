@@ -24,7 +24,8 @@ function element() {
     appendChild(child) { this.children.push(child); },
     setAttribute(name, value) { this.attributes[name] = value; },
     removeAttribute(name) { delete this.attributes[name]; delete this[name]; },
-    addEventListener(name, handler) { this.events[name] = handler; }, focus() {}
+    addEventListener(name, handler) { this.events[name] = handler; },
+    focus() { this.focusCalls = (this.focusCalls || 0) + 1; }
   };
 }
 
@@ -49,9 +50,27 @@ function createApp(source = testScript) {
   const downloads = [];
   const objectUrls = [];
   const revokedUrls = [];
-  for (const id of ["stickerPanel", "stickerToggle", "stickerPreview"]) get(id).hidden = true;
+  const notifications = [];
+  const timers = new Map();
+  const windowEvents = {};
+  const documentEvents = {};
+  let nextTimer = 0;
+  let permissionRequests = 0;
+  let windowFocusCalls = 0;
+  class MockNotification {
+    static permission = "granted";
+    static async requestPermission() { permissionRequests++; return this.permission; }
+    constructor(title, options) { this.title = title; this.options = options; notifications.push(this); }
+    close() { this.closed = true; }
+  }
+  for (const id of ["stickerPanel", "stickerToggle", "stickerPreview", "notificationToast"]) get(id).hidden = true;
   const context = vm.createContext({
     TextEncoder, TextDecoder, Uint8Array, btoa, atob, crypto: webcrypto,
+    Notification: MockNotification,
+    setTimeout: fn => { timers.set(++nextTimer, fn); return nextTimer; },
+    clearTimeout: id => timers.delete(id),
+    addEventListener: (name, handler) => { windowEvents[name] = handler; },
+    focus() { windowFocusCalls++; },
     fetch: async (url, options) => {
       downloads.push({ url, options });
       return { ok: true, blob: async () => new Blob(["sticker-fixture"], { type: "image/webp" }) };
@@ -64,16 +83,18 @@ function createApp(source = testScript) {
       },
       revokeObjectURL: url => revokedUrls.push(url)
     },
-    document: { getElementById: get, querySelector: get, createElement: element },
+    document: { getElementById: get, querySelector: get, createElement: element,
+      title: "Excel", visibilityState: "visible", hasFocus: () => true,
+      addEventListener: (name, handler) => { documentEvents[name] = handler; } },
     sessionStorage: storage(), localStorage: storage(),
     alert: message => alerts.push(message),
     initializeApp: () => ({}), getFirestore: () => ({}),
     collection: (_db, ...path) => path.join("/"),
     query: (path, ...constraints) => ({ path, constraints }),
-    orderBy: (...args) => args, limit: count => count,
+    orderBy: (...args) => args, limitToLast: count => ({ limitToLast: count }),
     serverTimestamp: () => "server-timestamp",
-    onSnapshot: (query, next, error) => {
-      const subscription = { query, next, error, closed: false };
+    onSnapshot: (query, options, next, error) => {
+      const subscription = { query, options, next, error, closed: false };
       subscriptions.push(subscription);
       return () => { subscription.closed = true; };
     },
@@ -82,6 +103,9 @@ function createApp(source = testScript) {
   vm.runInContext(source, context);
   return {
     context, get, subscriptions, writes, alerts, downloads, objectUrls, revokedUrls,
+    notifications, timers, windowEvents, documentEvents,
+    get permissionRequests() { return permissionRequests; },
+    get windowFocusCalls() { return windowFocusCalls; },
     run: code => vm.runInContext(code, context),
     async open(password, name = "테스트 사용자") {
       get("name").value = name;
@@ -95,9 +119,232 @@ function createApp(source = testScript) {
   };
 }
 
-function snapshot(data) {
-  return { docChanges: () => [{ type: "added", doc: { data: () => data } }] };
+function snapshot(data, options = {}) {
+  return { metadata: { fromCache: !!options.fromCache }, docChanges: () => data ? [{
+    type: options.type || "added",
+    doc: { id: options.id || `${data.iv}:${data.ct}`, metadata: { hasPendingWrites: !!options.pending }, data: () => data }
+  }] : [] };
 }
+
+async function incomingMessage(app, text = "비공개 대화 내용", sender = "친구", time = Date.now()) {
+  const encrypted = await app.run(`encryptText(currentBook.key, ${JSON.stringify(text)})`);
+  return { ...encrypted, sender, createdAt: { toMillis: () => time, toDate: () => new Date(time) } };
+}
+
+async function enableLiveNotifications(app) {
+  await app.get("notificationsToggle").events.click();
+  app.run("clearNotifications()");
+  await app.subscriptions.at(-1).next(snapshot(null));
+}
+
+test("알림은 기본 꺼짐, 방별 설정 저장, 직접 켤 때만 권한 요청, 추가 Firebase 요청 없음", async () => {
+  const app = createApp();
+  app.context.Notification.permission = "default";
+  await app.open("old-pass");
+  assert.equal(app.get("notificationsToggle").attributes["aria-checked"], "false");
+  assert.equal(app.permissionRequests, 0);
+  await app.get("notificationsToggle").events.click();
+  assert.equal(app.permissionRequests, 1);
+  assert.equal(app.get("notificationsToggle").attributes["aria-checked"], "true");
+  assert.equal(app.context.localStorage.getItem(`chatNotifications:${legacyRoomId}`), "on");
+  assert.equal(app.writes.length, 0);
+  assert.equal(app.subscriptions.length, 1);
+  assert.equal(app.subscriptions[0].options.includeMetadataChanges, true);
+  assert.equal(app.subscriptions[0].query.constraints[1].limitToLast, 1000);
+  app.run("closeBook()");
+  await app.open("second-test-password");
+  assert.equal(app.get("notificationsToggle").attributes["aria-checked"], "false");
+  app.run("closeBook()");
+  await app.open("old-pass");
+  assert.equal(app.get("notificationsToggle").attributes["aria-checked"], "true");
+  assert.equal(app.permissionRequests, 1);
+  await app.get("notificationsToggle").events.click();
+  assert.equal(app.context.localStorage.getItem(`chatNotifications:${legacyRoomId}`), "off");
+  assert.equal(app.get("notificationToast").hidden, true);
+});
+
+test("캐시·최초 서버 기록은 조용히 읽고 이후 새 글·이모티콘에는 화면 배너 표시", async () => {
+  const app = createApp();
+  await app.open("second-test-password");
+  await app.get("notificationsToggle").events.click();
+  app.run("clearNotifications()");
+  const next = app.subscriptions[0].next;
+  const cached = await incomingMessage(app, "캐시 기록");
+  await next(snapshot(cached, { fromCache: true }));
+  await next(snapshot(null)); // 캐시와 서버 내용이 같아 metadata만 바뀐 경우
+  assert.equal(app.get("notificationToast").hidden, true);
+  for (const text of ["새로운 글", "\u001e201"]) {
+    await next(snapshot(await incomingMessage(app, text)));
+    assert.equal(app.get("notificationToast").hidden, false);
+    assert.equal(app.get("notificationToastText").textContent, "친구님의 새 메시지가 있습니다.");
+    assert.equal(app.notifications.length, 0);
+    app.run("clearNotifications()");
+  }
+  assert.match(app.get("rows").children.at(-1).innerHTML, /sticker-message/);
+  app.run("closeBook()");
+  await app.open("second-test-password");
+  await app.subscriptions[1].next(snapshot(await incomingMessage(app, "서버의 과거 기록")));
+  assert.equal(app.get("notificationToast").hidden, true);
+});
+
+test("백그라운드 배너는 무음·본문 비공개이며 클릭하면 해당 창·최신 행·입력칸으로 이동", async () => {
+  const app = createApp();
+  await app.open("old-pass", "같은 이름");
+  await enableLiveNotifications(app);
+  app.context.document.visibilityState = "hidden";
+  // 다른 사용자가 같은 표시 이름을 써도 내 전송으로 오인하지 않습니다.
+  await app.subscriptions[0].next(snapshot(await incomingMessage(app, "비공개 본문", "같은 이름")));
+  const notification = app.notifications[0];
+  assert.equal(notification.options.silent, true);
+  assert.equal(notification.options.body, "같은 이름님의 새 메시지가 있습니다.");
+  assert.doesNotMatch(JSON.stringify(notification.options), /비공개 본문/);
+  assert.equal(app.context.document.title, "● 새 메시지 · Excel");
+  app.get(".grid").scrollTop = 0;
+  const before = app.get("text").focusCalls;
+  notification.onclick({ preventDefault() { assert.fail("활성 방은 브라우저 기본 포커스 동작 유지"); } });
+  assert.equal(app.windowFocusCalls, 1);
+  assert.equal(app.get("text").focusCalls, before + 1);
+  assert.equal(app.get(".grid").scrollTop, app.get(".grid").scrollHeight);
+  assert.equal(app.get("notificationToast").hidden, true);
+  assert.equal(app.context.document.title, "Excel");
+  assert.equal(notification.closed, true);
+  assert.equal(app.timers.size, 0);
+});
+
+test("화면 배너 클릭으로 초안 유지·입력칸 포커스, 닫기와 자동 숨김 동작", async () => {
+  const app = createApp();
+  await app.open("old-pass");
+  await enableLiveNotifications(app);
+  app.get("text").value = "작성 중인 초안";
+  const next = app.subscriptions[0].next;
+  await next(snapshot(await incomingMessage(app)));
+  app.windowEvents.focus();
+  app.documentEvents.visibilitychange();
+  assert.equal(app.get("notificationToast").hidden, false);
+  const before = app.get("text").focusCalls;
+  app.get("notificationOpen").events.click();
+  assert.equal(app.get("text").focusCalls, before + 1);
+  assert.equal(app.get("text").value, "작성 중인 초안");
+  assert.equal(app.get("notificationToast").hidden, true);
+  await next(snapshot(await incomingMessage(app)));
+  app.get("notificationDismiss").events.click();
+  assert.equal(app.get("notificationToast").hidden, true);
+  assert.equal(app.get("text").focusCalls, before + 1);
+  await next(snapshot(await incomingMessage(app)));
+  for (const timer of app.timers.values()) timer();
+  assert.equal(app.get("notificationToast").hidden, true);
+});
+
+test("내 메시지·중복 수신·오래된 재접속·복호화 실패·알림 끈 상태는 배너 제외", async () => {
+  const app = createApp();
+  await app.open("old-pass");
+  await enableLiveNotifications(app);
+  const next = app.subscriptions[0].next;
+  await app.send("내가 보낸 글");
+  const own = { ...app.writes[0].data, createdAt: { toMillis: () => Date.now() } };
+  await next(snapshot(own, { pending: true }));
+  await next(snapshot(own, { type: "modified" }));
+  await next(snapshot(own, { id: "own-server-echo" }));
+  await next(snapshot(await incomingMessage(app, "오래된 기록", "친구", Date.now() - 300000)));
+  await next(snapshot({ ...await incomingMessage(app), ct: "invalid" }));
+  assert.equal(app.get("notificationToast").hidden, true);
+  const fresh = await incomingMessage(app);
+  await next(snapshot(fresh));
+  assert.equal(app.get("notificationToast").hidden, false);
+  app.run("clearNotifications()");
+  const rowCount = app.get("rows").children.length;
+  await next(snapshot(fresh));
+  assert.equal(app.get("rows").children.length, rowCount);
+  assert.equal(app.get("notificationToast").hidden, true);
+  await app.get("notificationsToggle").events.click();
+  await next(snapshot(await incomingMessage(app)));
+  assert.equal(app.get("notificationToast").hidden, true);
+  assert.equal(app.notifications.length, 0);
+});
+
+test("권한 거부·미지원·시스템 배너 생성 실패 시에도 화면 배너와 채팅 유지", async () => {
+  for (const mode of ["denied", "missing", "throws"]) {
+    const app = createApp();
+    if (mode === "denied") app.context.Notification.permission = "denied";
+    if (mode === "missing") app.context.Notification = undefined;
+    if (mode === "throws") app.context.Notification = class {
+      static permission = "granted";
+      constructor() { throw new Error("unsupported"); }
+    };
+    await app.open("old-pass");
+    await enableLiveNotifications(app);
+    app.context.document.hasFocus = () => false;
+    await app.subscriptions[0].next(snapshot(await incomingMessage(app)));
+    assert.equal(app.get("notificationToast").hidden, false);
+    assert.equal(app.get("notificationToastText").textContent, "친구님의 새 메시지가 있습니다.");
+    assert.equal(app.notifications.length, 0);
+    assert.equal(app.alerts.length, 0);
+    assert.equal(app.run("currentBook.roomId"), legacyRoomId);
+  }
+});
+
+test("복호화 중 알림을 끄거나 방을 닫으면 늦은 배너를 표시하지 않음", async () => {
+  const app = createApp();
+  await app.open("old-pass");
+  await enableLiveNotifications(app);
+  const encrypted = await incomingMessage(app);
+  app.run("decryptText = () => new Promise(resolve => { globalThis.releaseDecrypt = resolve; })");
+  const pending = app.subscriptions[0].next(snapshot(encrypted));
+  await Promise.resolve();
+  await app.get("notificationsToggle").events.click();
+  app.context.releaseDecrypt("새 대화");
+  await pending;
+  assert.equal(app.get("notificationToast").hidden, true);
+  await app.get("notificationsToggle").events.click();
+  app.run("clearNotifications()");
+  const afterClose = app.subscriptions[0].next(snapshot(encrypted, { id: "second-message" }));
+  await Promise.resolve();
+  app.run("closeBook()");
+  await app.open("second-test-password");
+  app.context.releaseDecrypt("이전 방 메시지");
+  await afterClose;
+  assert.equal(app.get("notificationToast").hidden, true);
+  assert.equal(app.get("rows").children.length, 0);
+});
+
+test("권한 응답이 늦거나 다른 탭에서 알림을 꺼도 배너가 다시 나타나지 않음", async () => {
+  const app = createApp();
+  app.context.Notification.permission = "default";
+  let resolvePermission;
+  app.context.Notification.requestPermission = () => new Promise(resolve => { resolvePermission = resolve; });
+  await app.open("old-pass");
+  const pending = app.get("notificationsToggle").events.click();
+  await app.get("notificationsToggle").events.click();
+  resolvePermission("denied");
+  await pending;
+  assert.equal(app.get("notificationToast").hidden, true);
+  app.context.Notification.permission = "granted";
+  await enableLiveNotifications(app);
+  app.context.document.visibilityState = "hidden";
+  await app.subscriptions[0].next(snapshot(await incomingMessage(app)));
+  app.windowEvents.storage({ key: `chatNotifications:${legacyRoomId}`, newValue: "off" });
+  assert.equal(app.get("notificationsToggle").attributes["aria-checked"], "false");
+  assert.equal(app.get("notificationToast").hidden, true);
+  assert.equal(app.notifications[0].closed, true);
+});
+
+test("이전 방의 시스템 배너는 닫고, 늦게 눌러도 새 방 입력칸을 건드리지 않음", async () => {
+  const app = createApp();
+  await app.open("old-pass");
+  await enableLiveNotifications(app);
+  app.context.document.visibilityState = "hidden";
+  await app.subscriptions[0].next(snapshot(await incomingMessage(app)));
+  const oldNotification = app.notifications[0];
+  app.run("closeBook()");
+  assert.equal(oldNotification.closed, true);
+  await app.open("second-test-password");
+  const before = app.get("text").focusCalls;
+  let prevented = false;
+  oldNotification.onclick({ preventDefault() { prevented = true; } });
+  assert.equal(prevented, true);
+  assert.equal(app.windowFocusCalls, 0);
+  assert.equal(app.get("text").focusCalls, before);
+});
 
 test("기존 암호는 기존 경로, 등록 암호는 두 번째 방, 세 번째 방은 비활성", async () => {
   const app = createApp();

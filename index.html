@@ -87,6 +87,17 @@
     border: 1px solid #c5c5c5; padding: 4px 10px; border-radius: 4px;
   }
   .xl-menu .close:hover { background: #eee; }
+  .xl-menu .notification-toggle[aria-checked="true"] { background: #eaf4ee; border-color: var(--xl-green); color: var(--xl-green); }
+  .notification-toast {
+    position: fixed; right: 14px; bottom: 70px; z-index: 10; display: flex; align-items: center; gap: 12px;
+    max-width: min(360px, calc(100vw - 28px)); padding: 4px; background: #fff;
+    border: 1px solid #b6d2c1; border-radius: 8px; box-shadow: 0 4px 18px #0002;
+    font-size: 13px; line-height: 1.5; overflow-wrap: anywhere;
+  }
+  .notification-open { min-width: 0; padding: 8px 10px; background: none; color: inherit; font-size: inherit; line-height: inherit; text-align: left; overflow-wrap: anywhere; }
+  .notification-open small { display: block; margin-top: 3px; color: var(--xl-green); }
+  .notification-dismiss { flex-shrink: 0; padding: 8px; background: none; color: #666; font-size: 20px; }
+  .notification-toast button:focus-visible { outline: 2px solid var(--xl-green); border-radius: 4px; }
 
   .xl-formula {
     display: flex; align-items: center; border-bottom: 1px solid #d9d9d9;
@@ -217,6 +228,7 @@
         <span>수식</span><span>데이터</span><span>검토</span><span>보기</span>
       </span>
       <span class="spacer"></span>
+      <button id="notificationsToggle" class="close notification-toggle" role="switch" aria-checked="false" aria-label="새 메시지 알림" title="새 메시지 알림 켜기">🔕 알림 꺼짐</button>
       <div class="zoom">
         <button id="fontMinus" title="축소">−</button>
         <span class="size" id="fontSize">14</span>
@@ -269,10 +281,18 @@
     </div>
   </div>
 
+  <div id="notificationToast" class="notification-toast" hidden>
+    <button id="notificationOpen" class="notification-open">
+      <span id="notificationToastText" role="status" aria-live="polite"></span>
+      <small>채팅창 열기 →</small>
+    </button>
+    <button id="notificationDismiss" class="notification-dismiss" aria-label="알림 닫기">×</button>
+  </div>
+
   <script type="module">
     import { initializeApp } from "https://www.gstatic.com/firebasejs/10.12.2/firebase-app.js";
     import {
-      getFirestore, collection, addDoc, query, orderBy, onSnapshot, serverTimestamp, limit
+      getFirestore, collection, addDoc, query, orderBy, onSnapshot, serverTimestamp, limitToLast
     } from "https://www.gstatic.com/firebasejs/10.12.2/firebase-firestore.js";
 
     // =========================================================================
@@ -401,6 +421,89 @@
     const stickerBlobs = new Map();
     const stickerReplayUrls = new Set();
     const stickerReplayRequests = new WeakMap();
+    let desktopNotification = null;
+    let notificationToastTimer = null;
+
+    const notificationPreferenceKey = roomId => "chatNotifications:" + roomId;
+
+    function updateNotificationToggle() {
+      const enabled = !!currentBook?.notificationsEnabled;
+      $("notificationsToggle").setAttribute("aria-checked", String(enabled));
+      $("notificationsToggle").textContent = enabled ? "🔔 알림 켜짐" : "🔕 알림 꺼짐";
+      $("notificationsToggle").title = enabled ? "새 메시지 알림 끄기" : "새 메시지 알림 켜기";
+    }
+
+    function clearDesktopNotification() {
+      document.title = "Excel";
+      try { desktopNotification?.close(); } catch {}
+      desktopNotification = null;
+    }
+
+    function clearNotifications() {
+      clearTimeout(notificationToastTimer);
+      $("notificationToast").hidden = true;
+      $("notificationToastText").textContent = "";
+      clearDesktopNotification();
+    }
+
+    function showNotificationToast(text) {
+      clearTimeout(notificationToastTimer);
+      $("notificationToastText").textContent = text;
+      $("notificationToast").hidden = false;
+      notificationToastTimer = setTimeout(() => { $("notificationToast").hidden = true; }, 7000);
+    }
+
+    function openNotificationChat(book = currentBook) {
+      if (!book || currentBook !== book || !book.notificationsEnabled) return;
+      globalThis.focus();
+      clearNotifications();
+      gridEl.scrollTop = gridEl.scrollHeight;
+      $("text").focus();
+    }
+
+    async function toggleNotifications() {
+      const book = currentBook;
+      if (!book) return;
+      book.notificationsEnabled = !book.notificationsEnabled;
+      try { localStorage.setItem(notificationPreferenceKey(book.roomId), book.notificationsEnabled ? "on" : "off"); } catch {}
+      updateNotificationToggle();
+      if (!book.notificationsEnabled) { clearNotifications(); return; }
+      // 시스템 배너 권한은 이 버튼을 직접 눌렀을 때만 요청합니다.
+      showNotificationToast("알림을 켰습니다. 새 메시지를 조용한 배너로 알려드립니다.");
+      try {
+        const Notifications = globalThis.Notification;
+        if (Notifications?.permission === "default") await Notifications.requestPermission();
+        if (currentBook !== book || !book.notificationsEnabled) return;
+        if (!Notifications) {
+          showNotificationToast("화면 배너를 켰습니다. 이 브라우저에서는 시스템 배너를 사용할 수 없습니다.");
+        } else if (Notifications.permission !== "granted") {
+          showNotificationToast("화면 배너를 켰습니다. 다른 창에서도 받으려면 브라우저 알림을 허용해 주세요.");
+        }
+      } catch {
+        if (currentBook === book && book.notificationsEnabled) {
+          showNotificationToast("화면 배너를 켰습니다. 이 브라우저에서는 시스템 배너를 사용할 수 없습니다.");
+        }
+      }
+    }
+
+    function notifyReceivedMessage(book, sender) {
+      if (currentBook !== book || !book.notificationsEnabled) return;
+      const body = `${sender}님의 새 메시지가 있습니다.`;
+      showNotificationToast(body);
+      if (document.visibilityState === "visible" && document.hasFocus()) return;
+      document.title = "● 새 메시지 · Excel";
+      try {
+        if (globalThis.Notification?.permission !== "granted") return;
+        desktopNotification?.close();
+        const notification = new Notification("새 메시지", { body, tag: "chat-" + book.roomId, silent: true });
+        desktopNotification = notification;
+        notification.onclick = (event) => {
+          notification.close();
+          if (currentBook !== book || !book.notificationsEnabled) { event.preventDefault(); return; }
+          openNotificationChat(book);
+        };
+      } catch { /* 미지원 브라우저에서도 채팅과 화면 배너는 계속 동작합니다. */ }
+    }
 
     function isStickerRoom(book = currentBook) {
       return STICKER_PACKS.some(pack => pack.roomId === book?.roomId);
@@ -595,36 +698,57 @@
       try {
         const roomId = await resolveRoomId(pass);
         const key = await deriveKey(pass, roomId);
-        const book = { roomId, key, name };
+        const book = { roomId, key, name, notificationsEnabled: false, notificationsReady: false,
+          seenMessages: new Set(), ownMessages: new Set() };
+        try { book.notificationsEnabled = localStorage.getItem(notificationPreferenceKey(roomId)) === "on"; } catch {}
         currentBook = book;
         sessionStorage.setItem("book", JSON.stringify({ name, pass }));
 
         loginEl.style.display = "none";
         sheetEl.style.display = "flex";
         configureStickerPicker(book);
+        updateNotificationToggle();
         $("text").focus();
 
         const msgsRef = collection(db, "rooms", book.roomId, "messages");
-        const q = query(msgsRef, orderBy("createdAt", "asc"), limit(1000));
+        const q = query(msgsRef, orderBy("createdAt", "asc"), limitToLast(1000));
         let pendingSnapshot = Promise.resolve();
         const onError = () => {
           if (currentBook !== book) return;
           closeBook();
           alert("문서를 열 수 없습니다. 연결 상태와 문서 권한을 확인하세요.");
         };
-        unsubscribe = onSnapshot(q, (snap) => {
+        unsubscribe = onSnapshot(q, { includeMetadataChanges: true }, (snap) => {
+          // 캐시와 최초 서버 기록은 조용히 불러오고, 그 뒤의 서버 수신만 알립니다.
+          const mayNotify = book.notificationsReady && book.notificationsEnabled && !snap.metadata.fromCache;
+          if (!snap.metadata.fromCache) book.notificationsReady = true;
           // 복호화 중 닫거나 다른 방을 열어도 이전 방의 행을 추가하지 않습니다.
           pendingSnapshot = pendingSnapshot.then(async () => {
             if (currentBook !== book) return;
+            let notificationSender = null;
+            let rowsAdded = false;
             for (const change of snap.docChanges()) {
               if (change.type !== "added") continue;
               const d = change.doc.data();
+              const id = change.doc.id;
+              if (book.seenMessages.has(id)) continue;
+              book.seenMessages.add(id);
               const text = await decryptText(book.key, d.iv, d.ct);
               if (currentBook !== book) return;
               renderRow(d.sender, text, d.createdAt);
+              rowsAdded = true;
+              const age = Date.now() - (d.createdAt?.toMillis?.() ?? 0);
+              if (mayNotify && text !== "#VALUE!" && !change.doc.metadata.hasPendingWrites
+                  && !book.ownMessages.has(d.ct) && age >= -30000 && age <= 120000) {
+                notificationSender = d.sender;
+              }
             }
-            renumber();
-            gridEl.scrollTop = gridEl.scrollHeight;
+            if (rowsAdded) {
+              renumber();
+              gridEl.scrollTop = gridEl.scrollHeight;
+            }
+            // 같은 스냅샷의 여러 메시지는 배너 하나로 묶습니다.
+            if (notificationSender !== null) notifyReceivedMessage(book, notificationSender);
           }).catch(onError);
           return pendingSnapshot;
         }, onError);
@@ -692,6 +816,7 @@
     async function storeMessage(book, text) {
       const { iv, ct } = await encryptText(book.key, text);
       if (currentBook !== book) return;
+      book.ownMessages.add(ct);
       await addDoc(collection(db, "rooms", book.roomId, "messages"), {
         sender: book.name, iv, ct, createdAt: serverTimestamp()
       });
@@ -715,6 +840,8 @@
 
     function closeBook() {
       currentBook = null;
+      clearNotifications();
+      updateNotificationToggle();
       closeStickerPicker();
       $("stickerToggle").hidden = true;
       $("stickerTabs").innerHTML = "";
@@ -765,6 +892,20 @@
     $("enter").addEventListener("click", openBook);
     $("add").addEventListener("click", addRow);
     $("close").addEventListener("click", closeBook);
+    $("notificationsToggle").addEventListener("click", toggleNotifications);
+    $("notificationOpen").addEventListener("click", () => openNotificationChat());
+    $("notificationDismiss").addEventListener("click", clearNotifications);
+    // 창을 활성화하는 순간 클릭할 화면 배너가 사라지지 않도록 유지합니다.
+    globalThis.addEventListener("focus", clearDesktopNotification);
+    document.addEventListener("visibilitychange", () => {
+      if (document.visibilityState === "visible" && document.hasFocus()) clearDesktopNotification();
+    });
+    globalThis.addEventListener("storage", e => {
+      if (!currentBook || e.key !== notificationPreferenceKey(currentBook.roomId)) return;
+      currentBook.notificationsEnabled = e.newValue === "on";
+      updateNotificationToggle();
+      if (!currentBook.notificationsEnabled) clearNotifications();
+    });
     $("stickerToggle").addEventListener("click", toggleStickerPicker);
     $("stickerClose").addEventListener("click", () => { closeStickerPicker(); $("stickerToggle").focus(); });
     $("stickerSend").addEventListener("click", sendSticker);

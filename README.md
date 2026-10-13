@@ -8,7 +8,7 @@
 - 종단간 암호화 (공유 비밀번호 기반 AES-GCM)
 - **최대 3개 방**: 이름 + 암호만 입력하면 해당 방으로 자동 연결 (현재 기존 방 + 추가 방 1개 활성)
 - **위장 UI**: "보호된 통합 문서 / 실적_분석.xlsx" 처럼 보이는 스프레드시트(엑셀) 테마
-- 두 번째 방 전용 움직이는 이모티콘 48개
+- 방별 전용 이모티콘 (기존 방 88개, 두 번째 방 48개)
 - 서버 코드 불필요 (`index.html` + `assets/`로 실행되는 정적 사이트)
 
 ## 방 연결 방식과 기존 대화 보존
@@ -45,15 +45,22 @@ node scripts/configure-room.mjs 3
 사이트 배포에는 `index.html`과 `assets/`가 필요하고, Firebase에는 `firestore.rules`를 적용합니다.
 Firestore 규칙이 기존 단일 방 설정인 상태에서는 두 번째 방에 접근할 수 없습니다.
 
-### 두 번째 방 이모티콘
+### 방별 이모티콘
 
 입력창 옆 **☺** → 묶음/이모티콘 선택 → **보내기**로 전송합니다.
-대화에 표시되는 크기는 80×80px이며, 이모티콘을 누르면 처음부터 다시 재생합니다.
+대화에 표시되는 크기는 80×80px이며, 움직이는 이모티콘을 누르면 처음부터 다시 재생합니다.
 다시 재생할 때는 이미지 캐시를 재사용하고 Firebase를 읽거나 쓰지 않습니다.
-기존 방과 세 번째 방에는 이 기능이 표시되지 않습니다.
+방별로 아래 묶음만 선택·전송·표시하며, 세 번째 방에는 이 기능이 표시되지 않습니다.
 
-- 제작자의 사용 허가에 따라 [리센느 X 안원잘부 2](https://e.kakao.com/t/helloiamwoninicetomeetyou-2),
-  [시즌1](https://e.kakao.com/t/helloiamwoninicetomeetyou-s1)의 공개 움직이는 미리보기 WebP를 각각 24개 사용합니다.
+| 방 | 허가받아 사용하는 공개 미리보기 | 개수 |
+| --- | --- | --- |
+| 기존 방 | [사랑에 빠진 곰 3](https://e.kakao.com/t/bear-in-love-ver-3) | 정지 PNG 32개 |
+| 기존 방 | [사랑에 빠진 토끼 3](https://e.kakao.com/t/rabbit-in-love-ver-3) | 정지 PNG 32개 |
+| 기존 방 | [사랑에 빠져버린 곰&토끼 커플](https://e.kakao.com/t/bear-and-rabbit-are-in-love) | 움직이는 WebP 24개 |
+| 두 번째 방 | [리센느 X 안원잘부 2](https://e.kakao.com/t/helloiamwoninicetomeetyou-2) | 움직이는 WebP 24개 |
+| 두 번째 방 | [리센느 X 안원잘부 시즌1](https://e.kakao.com/t/helloiamwoninicetomeetyou-s1) | 움직이는 WebP 24개 |
+
+- 기존 이모티콘 ID는 그대로 유지하며, 기존 대화와 암호화 방식은 변경하지 않습니다.
 - 이미지는 `assets/stickers/`에서 GitHub Pages로 제공하며 Firebase Storage를 사용하지 않습니다.
   선택창을 열었을 때 해당 묶음을 만들고, 이미지는 지연 로딩합니다.
 - Firestore에는 구분자 1바이트 + ID 3바이트만 기존 AES-GCM으로 암호화해 저장합니다.

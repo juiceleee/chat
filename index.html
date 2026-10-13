@@ -139,7 +139,7 @@
     border-radius: 3px; font-size: 22px;
   }
   .sticker-panel {
-    flex-shrink: 0; display: flex; flex-direction: column; max-height: min(45vh, 370px);
+    flex: 0 1 auto; min-height: 0; display: flex; flex-direction: column; max-height: min(65vh, 370px);
     border-top: 1px solid #d9d9d9; background: #fafcfb;
   }
   .sticker-header, .sticker-footer {
@@ -168,6 +168,11 @@
   .sticker-message { display: block; width: min(80px, 100%); height: auto; aspect-ratio: 1; object-fit: contain; }
   @media (max-width: 480px) {
     .sticker-grid { grid-template-columns: repeat(4, minmax(0, 1fr)); }
+  }
+  @media (max-height: 480px) {
+    .sticker-header, .sticker-footer { padding-top: 4px; padding-bottom: 4px; }
+    .sticker-footer { min-height: 40px; }
+    .sticker-footer img { width: 32px; height: 32px; }
   }
 </style>
 </head>
@@ -238,10 +243,7 @@
     <section id="stickerPanel" class="sticker-panel" aria-label="이모티콘 선택" hidden>
       <div class="sticker-header">
         <strong>이모티콘</strong>
-        <select id="stickerPack" aria-label="이모티콘 묶음">
-          <option value="2">리센느 X 안원잘부 2</option>
-          <option value="1">리센느 X 안원잘부 시즌1</option>
-        </select>
+        <select id="stickerPack" aria-label="이모티콘 묶음"></select>
         <button id="stickerClose" aria-label="이모티콘 닫기">×</button>
       </div>
       <div id="stickerGrid" class="sticker-grid"></div>
@@ -293,18 +295,26 @@
       }
     ];
     // 이미지는 정적 호스팅에서만 로드합니다. Firestore에는 4바이트 코드만 암호화합니다.
-    const STICKER_ROOM_ID = ROOM_ID + "-2";
     const STICKER_PREFIX = "\u001e";
+    // ID는 이전 대화에 저장되므로 변경하거나 다른 묶음에 재사용하지 않습니다.
     const STICKER_PACKS = [
-      { id: "2", folder: "wonni-2", name: "리센느 X 안원잘부 2" },
-      { id: "1", folder: "wonni-s1", name: "리센느 X 안원잘부 시즌1" }
+      { id: "2", roomId: ROOM_ID + "-2", folder: "wonni-2", name: "리센느 X 안원잘부 2",
+        count: 24, ext: "webp", animated: true },
+      { id: "1", roomId: ROOM_ID + "-2", folder: "wonni-s1", name: "리센느 X 안원잘부 시즌1",
+        count: 24, ext: "webp", animated: true },
+      { id: "3", roomId: ROOM_ID, folder: "bear-in-love-ver-3", name: "사랑에 빠진 곰 3",
+        count: 32, ext: "png", animated: false },
+      { id: "4", roomId: ROOM_ID, folder: "rabbit-in-love-ver-3", name: "사랑에 빠진 토끼 3",
+        count: 32, ext: "png", animated: false },
+      { id: "5", roomId: ROOM_ID, folder: "bear-and-rabbit-are-in-love", name: "사랑에 빠져버린 곰&토끼 커플",
+        count: 24, ext: "webp", animated: true }
     ];
     const STICKERS = new Map(STICKER_PACKS.flatMap(pack =>
-      Array.from({ length: 24 }, (_, i) => {
+      Array.from({ length: pack.count }, (_, i) => {
         const number = String(i + 1).padStart(2, "0");
         const id = pack.id + number;
-        return [id, { id, pack: pack.id, label: `${pack.name} · ${i + 1}`,
-          src: `assets/stickers/${pack.folder}/${number}.webp` }];
+        return [id, { id, pack: pack.id, roomId: pack.roomId, animated: pack.animated,
+          label: `${pack.name} · ${i + 1}`, src: `assets/stickers/${pack.folder}/${number}.${pack.ext}` }];
       })
     ));
     // =========================================================================
@@ -383,12 +393,32 @@
     const stickerReplayRequests = new WeakMap();
 
     function isStickerRoom(book = currentBook) {
-      return book?.roomId === STICKER_ROOM_ID;
+      return STICKER_PACKS.some(pack => pack.roomId === book?.roomId);
+    }
+
+    function getRoomSticker(id, book = currentBook) {
+      const sticker = STICKERS.get(id);
+      return sticker && sticker.roomId === book?.roomId ? sticker : null;
+    }
+
+    function configureStickerPicker(book) {
+      closeStickerPicker();
+      const packs = STICKER_PACKS.filter(pack => pack.roomId === book.roomId);
+      const select = $("stickerPack");
+      select.innerHTML = "";
+      for (const pack of packs) {
+        const option = document.createElement("option");
+        option.value = pack.id;
+        option.textContent = pack.name;
+        select.appendChild(option);
+      }
+      select.value = packs[0]?.id || "";
+      $("stickerToggle").hidden = packs.length === 0;
     }
 
     async function replaySticker(img, sticker) {
       const book = currentBook;
-      if (!isStickerRoom(book)) return;
+      if (!sticker?.animated || getRoomSticker(sticker.id, book) !== sticker) return;
       const request = {};
       stickerReplayRequests.set(img, request);
       try {
@@ -440,7 +470,7 @@
 
     function selectSticker(id) {
       if (!isStickerRoom() || currentBook.sendingSticker || $("stickerPanel").hidden) return;
-      selectedSticker = STICKERS.get(id) || null;
+      selectedSticker = getRoomSticker(id);
       updateStickerSelection();
     }
 
@@ -451,7 +481,7 @@
       $("stickerGrid").innerHTML = "";
       $("stickerGrid").scrollTop = 0;
       for (const sticker of STICKERS.values()) {
-        if (sticker.pack !== $("stickerPack").value) continue;
+        if (sticker.pack !== $("stickerPack").value || !getRoomSticker(sticker.id)) continue;
         const button = document.createElement("button");
         button.className = "sticker-choice";
         button.setAttribute("aria-label", sticker.label);
@@ -489,7 +519,7 @@
     async function sendSticker() {
       const book = currentBook;
       const sticker = selectedSticker;
-      if (!isStickerRoom(book) || !sticker || book.sendingSticker || $("stickerPanel").hidden) return;
+      if (!getRoomSticker(sticker?.id, book) || book.sendingSticker || $("stickerPanel").hidden) return;
       book.sendingSticker = true;
       updateStickerSelection();
       try {
@@ -523,7 +553,7 @@
 
         loginEl.style.display = "none";
         sheetEl.style.display = "flex";
-        $("stickerToggle").hidden = !isStickerRoom(book);
+        configureStickerPicker(book);
         $("text").focus();
 
         const msgsRef = collection(db, "rooms", book.roomId, "messages");
@@ -594,11 +624,15 @@
         lastSender = sender;
       }
       // 이 방에서만 허용된 로컬 이미지로 해석합니다. 임의 URL/HTML은 실행하지 않습니다.
-      const sticker = isStickerRoom() && text.startsWith(STICKER_PREFIX)
-        ? STICKERS.get(text.slice(STICKER_PREFIX.length)) : null;
-      const content = sticker
-        ? `<button class="sticker-replay" data-sticker="${sticker.id}" aria-label="${escapeHtml(sticker.label)} 다시 재생" title="누르면 다시 재생"><img class="sticker-message" src="${sticker.src}" alt="${escapeHtml(sticker.label)}" width="80" height="80" loading="lazy" decoding="async"></button>`
-        : escapeHtml(text);
+      const sticker = text.startsWith(STICKER_PREFIX)
+        ? getRoomSticker(text.slice(STICKER_PREFIX.length)) : null;
+      let content = escapeHtml(text);
+      if (sticker) {
+        content = `<img class="sticker-message" src="${sticker.src}" alt="${escapeHtml(sticker.label)}" width="80" height="80" loading="lazy" decoding="async">`;
+        if (sticker.animated) {
+          content = `<button class="sticker-replay" data-sticker="${sticker.id}" aria-label="${escapeHtml(sticker.label)} 다시 재생" title="누르면 다시 재생">${content}</button>`;
+        }
+      }
       appendRow(`${content}<span class="msgtime">${timeStr(time)}</span>`, "msgrow");
     }
 
@@ -635,6 +669,8 @@
       currentBook = null;
       closeStickerPicker();
       $("stickerToggle").hidden = true;
+      $("stickerPack").innerHTML = "";
+      $("stickerPack").value = "";
       if (unsubscribe) unsubscribe();
       unsubscribe = null;
       sessionStorage.removeItem("book");
@@ -683,7 +719,7 @@
     $("stickerSend").addEventListener("click", sendSticker);
     rowsEl.addEventListener("click", e => {
       const button = e.target.closest?.(".sticker-replay");
-      const sticker = button && STICKERS.get(button.dataset.sticker);
+      const sticker = button && getRoomSticker(button.dataset.sticker);
       if (sticker) replaySticker(button.querySelector("img"), sticker);
     });
     $("stickerPanel").addEventListener("keydown", e => {

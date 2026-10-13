@@ -50,7 +50,6 @@ function createApp(source = testScript) {
   const objectUrls = [];
   const revokedUrls = [];
   for (const id of ["stickerPanel", "stickerToggle", "stickerPreview"]) get(id).hidden = true;
-  get("stickerPack").value = "2";
   const context = vm.createContext({
     TextEncoder, TextDecoder, Uint8Array, btoa, atob, crypto: webcrypto,
     fetch: async (url, options) => {
@@ -226,18 +225,22 @@ test("세 번째 암호를 나중에 등록해도 기존 두 방 연결 유지",
   assert.equal(await app.run('resolveRoomId("old-pass")'), legacyRoomId);
 });
 
-test("이모티콘은 두 번째 방에서만 열리고 선택·미리보기에 Firebase 요청 없음", async () => {
+test("방별 묶음만 표시하고 방 전환 시 선택을 초기화하며 미리보기에 Firebase 요청 없음", async () => {
   const app = createApp();
   await app.open("old-pass");
-  assert.equal(app.get("stickerToggle").hidden, true);
+  assert.equal(app.get("stickerToggle").hidden, false);
+  assert.deepEqual(app.get("stickerPack").children.map(option => option.value), ["3", "4", "5"]);
   app.run('toggleStickerPicker(); selectSticker("201")');
   await app.run("sendSticker()");
-  assert.equal(app.get("stickerPanel").hidden, true);
-  assert.equal(app.get("stickerGrid").children.length, 0);
+  assert.equal(app.get("stickerPanel").hidden, false);
+  assert.equal(app.get("stickerGrid").children.length, 32);
+  assert.equal(app.get("stickerGrid").children[0].children[0].src, "assets/stickers/bear-in-love-ver-3/01.png");
+  assert.equal(app.get("stickerSend").disabled, true);
   assert.equal(app.writes.length, 0);
   app.run("closeBook()");
   await app.open("second-test-password");
   assert.equal(app.get("stickerToggle").hidden, false);
+  assert.deepEqual(app.get("stickerPack").children.map(option => option.value), ["2", "1"]);
   app.get("stickerToggle").events.click();
   assert.equal(app.get("stickerGrid").children.length, 24);
   assert.equal(app.get("stickerSend").disabled, true);
@@ -255,17 +258,32 @@ test("이모티콘은 두 번째 방에서만 열리고 선택·미리보기에 
   assert.equal(app.get("stickerPanel").hidden, true);
   assert.equal(app.get("stickerToggle").hidden, true);
   assert.equal(app.get("stickerGrid").children.length, 0);
+  await app.open("old-pass");
+  assert.deepEqual(app.get("stickerPack").children.map(option => option.value), ["3", "4", "5"]);
+  assert.equal(app.get("stickerPack").value, "3");
+  assert.equal(app.run("selectedSticker"), null);
 });
 
-test("48개 ID의 정적 WebP 파일이 모두 존재하고 카탈로그 ID가 중복되지 않음", async () => {
+test("두 방의 136개 ID와 PNG/WebP 파일이 유효하고 기존 48개 ID 유지", async () => {
   const app = createApp();
   const catalog = app.run("Array.from(STICKERS.values())");
-  assert.equal(catalog.length, 48);
+  assert.equal(catalog.length, 136);
+  assert.equal(catalog.filter(sticker => sticker.roomId === legacyRoomId).length, 88);
+  assert.equal(catalog.filter(sticker => sticker.roomId === secondRoomId).length, 48);
   for (const sticker of catalog) {
-    assert.match(sticker.id, /^[12](0[1-9]|1[0-9]|2[0-4])$/);
+    assert.match(sticker.id, /^[1-5](0[1-9]|[12][0-9]|3[0-2])$/);
     const image = await readFile(new URL(`../${sticker.src}`, import.meta.url));
-    assert.equal(image.toString("ascii", 0, 4), "RIFF");
-    assert.equal(image.toString("ascii", 8, 12), "WEBP");
+    if (sticker.src.endsWith(".png")) {
+      assert.equal(image.subarray(0, 8).toString("hex"), "89504e470d0a1a0a");
+    } else {
+      assert.equal(image.toString("ascii", 0, 4), "RIFF");
+      assert.equal(image.toString("ascii", 8, 12), "WEBP");
+    }
+    if (sticker.roomId === secondRoomId) {
+      assert.match(sticker.id, /^[12](0[1-9]|1[0-9]|2[0-4])$/);
+      const folder = sticker.id[0] === "2" ? "wonni-2" : "wonni-s1";
+      assert.equal(sticker.src, `assets/stickers/${folder}/${sticker.id.slice(1)}.webp`);
+    }
   }
 });
 
@@ -291,7 +309,7 @@ test("이미지 대신 4바이트 코드만 암호화하여 한 문서에 저장
   assert.match(bob.get("rows").children[1].innerHTML, /class="sticker-message" src="assets\/stickers\/wonni-2\/01.webp"/);
 });
 
-test("등록되지 않은 ID와 임의 HTML은 이미지로 해석하지 않으며 기존 방도 해석하지 않음", async () => {
+test("등록되지 않은 ID·임의 HTML·다른 방의 이모티콘은 이미지로 해석하지 않음", async () => {
   const app = createApp();
   await app.open("second-test-password");
   for (const text of ["\u001e999", "\u001e201 extra", "\u001ehttps://example.com/image.webp", '<img src=x onerror="alert(1)">']) {
@@ -310,6 +328,64 @@ test("등록되지 않은 ID와 임의 HTML은 이미지로 해석하지 않으�
   app.run('toggleStickerPicker(); selectSticker("201")');
   await app.run("sendSticker()");
   assert.equal(app.writes.length, 0);
+});
+
+test("기존 방에서 세 묶음을 짧은 암호문으로 전송하고 같은 방에서만 표시·재생", async () => {
+  const alice = createApp();
+  const bob = createApp();
+  const otherRoom = createApp();
+  await Promise.all([alice.open("old-pass"), bob.open("old-pass"), otherRoom.open("second-test-password")]);
+  for (const [id, folder, ext] of [
+    ["332", "bear-in-love-ver-3", "png"],
+    ["432", "rabbit-in-love-ver-3", "png"],
+    ["524", "bear-and-rabbit-are-in-love", "webp"]
+  ]) {
+    alice.run("toggleStickerPicker()");
+    alice.get("stickerPack").value = id[0];
+    alice.get("stickerPack").events.change();
+    assert.equal(alice.get("stickerGrid").children.length, id[0] === "5" ? 24 : 32);
+    alice.get("stickerGrid").children.at(-1).events.click();
+    await alice.get("stickerSend").events.click();
+    const { path, data } = alice.writes.at(-1);
+    assert.equal(path, `rooms/${legacyRoomId}/messages`);
+    assert.equal(data.ct.length, 28);
+    assert.equal(await alice.run(`decryptText(currentBook.key, "${data.iv}", "${data.ct}")`), `\u001e${id}`);
+    await bob.subscriptions[0].next(snapshot(data));
+    const markup = bob.get("rows").children.at(-1).innerHTML;
+    assert.ok(markup.includes(`assets/stickers/${folder}/${id.slice(1)}.${ext}`));
+    assert.match(markup, /width="80" height="80"/);
+    assert.equal(markup.includes('class="sticker-replay"'), ext === "webp");
+    otherRoom.run(`renderRow("sender", STICKER_PREFIX + "${id}")`);
+    assert.doesNotMatch(otherRoom.get("rows").children.at(-1).innerHTML, /<img/);
+  }
+  bob.context.replayImage = { src: "original.webp" };
+  await bob.run('replaySticker(replayImage, STICKERS.get("524"))');
+  assert.match(bob.context.replayImage.src, /^blob:/);
+  await bob.run('replaySticker(replayImage, STICKERS.get("332"))');
+  assert.equal(bob.downloads.length, 1);
+  assert.equal(bob.writes.length, 0);
+  assert.equal(alice.writes.length, 3);
+});
+
+test("다른 방의 묶음·ID를 지정해도 선택·전송·재생할 수 없음", async () => {
+  const app = createApp();
+  for (const [pass, forbiddenPack, forbiddenId] of [["old-pass", "2", "201"], ["second-test-password", "5", "501"]]) {
+    await app.open(pass);
+    app.run("toggleStickerPicker()");
+    app.get("stickerPack").value = forbiddenPack;
+    app.get("stickerPack").events.change();
+    assert.equal(app.get("stickerGrid").children.length, 0);
+    app.run(`selectSticker("${forbiddenId}")`);
+    assert.equal(app.run("selectedSticker"), null);
+    app.run(`selectedSticker = STICKERS.get("${forbiddenId}")`);
+    await app.run("sendSticker()");
+    app.context.replayImage = { src: "unchanged.webp" };
+    await app.run(`replaySticker(replayImage, STICKERS.get("${forbiddenId}"))`);
+    assert.equal(app.context.replayImage.src, "unchanged.webp");
+    assert.equal(app.downloads.length, 0);
+    assert.equal(app.writes.length, 0);
+    app.run("closeBook()");
+  }
 });
 
 test("이모티콘 전송 실패 후 선택을 유지하여 재시도하며 중복 클릭은 한 번만 전송", async () => {

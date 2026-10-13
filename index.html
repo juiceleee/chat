@@ -14,6 +14,7 @@
     --text-dim: #6b7280;
   }
   * { box-sizing: border-box; }
+  [hidden] { display: none !important; }
   html, body { height: 100%; margin: 0; }
   body {
     font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto,
@@ -95,7 +96,7 @@
   .xl-formula .fx { width: 32px; text-align: center; font-style: italic; color: #999; border-right: 1px solid #d9d9d9; padding: 5px 0; }
   .xl-formula .fcontent { flex: 1; min-width: 0; padding: 5px 10px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 
-  .grid { flex: 1; overflow: auto; }
+  .grid { flex: 1; min-height: 0; overflow: auto; }
   table.sheet { border-collapse: collapse; width: 100%; font-size: 14px; }
   table.sheet th, table.sheet td { border: 1px solid var(--grid); }
   table.sheet thead th {
@@ -132,6 +133,40 @@
     border-radius: 3px; font-size: 13px; align-self: stretch;
   }
   .cellbar .add:hover { filter: brightness(1.08); }
+  .cellbar .sticker-toggle {
+    align-self: stretch; min-width: 36px; padding: 4px 8px;
+    background: #fff; color: var(--xl-green); border: 1px solid #b7b7b7;
+    border-radius: 3px; font-size: 22px;
+  }
+  .sticker-panel {
+    flex-shrink: 0; display: flex; flex-direction: column; max-height: min(45vh, 370px);
+    border-top: 1px solid #d9d9d9; background: #fafcfb;
+  }
+  .sticker-header, .sticker-footer {
+    display: flex; align-items: center; gap: 10px; padding: 8px 12px; flex-shrink: 0;
+    font-size: 12px;
+  }
+  .sticker-header select {
+    min-width: 0; max-width: 60%; padding: 6px; border: 1px solid #c5c5c5;
+    border-radius: 4px; background: #fff; color: var(--text); font: inherit;
+  }
+  .sticker-header button { margin-left: auto; background: none; font-size: 22px; color: #666; }
+  .sticker-grid {
+    display: grid; grid-template-columns: repeat(6, minmax(0, 1fr)); gap: 6px;
+    overflow-y: auto; min-height: 0; padding: 4px 12px; max-width: 660px; width: 100%;
+  }
+  .sticker-choice { padding: 3px; background: #fff; border: 2px solid transparent; border-radius: 6px; }
+  .sticker-choice[aria-pressed="true"] { border-color: var(--xl-green); background: #eaf4ee; }
+  .sticker-choice img { display: block; width: 100%; height: auto; aspect-ratio: 1; object-fit: contain; }
+  .sticker-footer { min-height: 64px; border-top: 1px solid #e5e7eb; }
+  .sticker-footer img { width: 48px; height: 48px; object-fit: contain; }
+  .sticker-footer span { flex: 1; color: var(--text-dim); }
+  .sticker-footer button { padding: 8px 16px; background: var(--xl-green); color: #fff; border-radius: 4px; }
+  .sticker-panel button:disabled { opacity: .5; cursor: default; }
+  .sticker-message { display: block; width: min(160px, 100%); height: auto; aspect-ratio: 1; object-fit: contain; }
+  @media (max-width: 480px) {
+    .sticker-grid { grid-template-columns: repeat(4, minmax(0, 1fr)); }
+  }
 </style>
 </head>
 <body>
@@ -198,7 +233,25 @@
       </table>
     </div>
 
+    <section id="stickerPanel" class="sticker-panel" aria-label="이모티콘 선택" hidden>
+      <div class="sticker-header">
+        <strong>이모티콘</strong>
+        <select id="stickerPack" aria-label="이모티콘 묶음">
+          <option value="2">리센느 X 안원잘부 2</option>
+          <option value="1">리센느 X 안원잘부 시즌1</option>
+        </select>
+        <button id="stickerClose" aria-label="이모티콘 닫기">×</button>
+      </div>
+      <div id="stickerGrid" class="sticker-grid"></div>
+      <div class="sticker-footer">
+        <img id="stickerPreview" alt="" width="48" height="48" hidden />
+        <span id="stickerLabel" aria-live="polite">이모티콘을 선택하세요.</span>
+        <button id="stickerSend" disabled>보내기</button>
+      </div>
+    </section>
+
     <div class="cellbar">
+      <button id="stickerToggle" class="sticker-toggle" aria-label="이모티콘" title="이모티콘" aria-controls="stickerPanel" aria-expanded="false" hidden>☺</button>
       <textarea id="text" rows="1" placeholder="셀에 입력..."></textarea>
       <button class="add" id="add">입력</button>
     </div>
@@ -237,6 +290,21 @@
         "passwordHash": ""
       }
     ];
+    // 이미지는 정적 호스팅에서만 로드합니다. Firestore에는 4바이트 코드만 암호화합니다.
+    const STICKER_ROOM_ID = ROOM_ID + "-2";
+    const STICKER_PREFIX = "\u001e";
+    const STICKER_PACKS = [
+      { id: "2", folder: "wonni-2", name: "리센느 X 안원잘부 2" },
+      { id: "1", folder: "wonni-s1", name: "리센느 X 안원잘부 시즌1" }
+    ];
+    const STICKERS = new Map(STICKER_PACKS.flatMap(pack =>
+      Array.from({ length: 24 }, (_, i) => {
+        const number = String(i + 1).padStart(2, "0");
+        const id = pack.id + number;
+        return [id, { id, pack: pack.id, label: `${pack.name} · ${i + 1}`,
+          src: `assets/stickers/${pack.folder}/${number}.webp` }];
+      })
+    ));
     // =========================================================================
 
     const isConfigured = !firebaseConfig.apiKey.startsWith("YOUR_");
@@ -306,6 +374,98 @@
     let opening = false;
     let unsubscribe = null;
     let lastSender = null;
+    let selectedSticker = null;
+    let stickerButtons = [];
+
+    function isStickerRoom(book = currentBook) {
+      return book?.roomId === STICKER_ROOM_ID;
+    }
+
+    function updateStickerSelection() {
+      const busy = !!currentBook?.sendingSticker;
+      for (const [id, button] of stickerButtons) {
+        button.setAttribute("aria-pressed", String(selectedSticker?.id === id));
+        button.disabled = busy;
+      }
+      $("stickerPack").disabled = busy;
+      $("stickerSend").disabled = !selectedSticker || busy;
+      $("stickerSend").textContent = busy ? "보내는 중…" : "보내기";
+      $("stickerPreview").hidden = !selectedSticker;
+      if (selectedSticker) {
+        $("stickerPreview").src = selectedSticker.src;
+        $("stickerPreview").alt = selectedSticker.label;
+      } else {
+        $("stickerPreview").removeAttribute("src");
+      }
+      $("stickerLabel").textContent = selectedSticker?.label || "이모티콘을 선택하세요.";
+    }
+
+    function selectSticker(id) {
+      if (!isStickerRoom() || currentBook.sendingSticker || $("stickerPanel").hidden) return;
+      selectedSticker = STICKERS.get(id) || null;
+      updateStickerSelection();
+    }
+
+    function showStickerPack() {
+      if (!isStickerRoom()) return;
+      selectedSticker = null;
+      stickerButtons = [];
+      $("stickerGrid").innerHTML = "";
+      $("stickerGrid").scrollTop = 0;
+      for (const sticker of STICKERS.values()) {
+        if (sticker.pack !== $("stickerPack").value) continue;
+        const button = document.createElement("button");
+        button.className = "sticker-choice";
+        button.setAttribute("aria-label", sticker.label);
+        const img = document.createElement("img");
+        img.src = sticker.src;
+        img.alt = sticker.label;
+        img.width = img.height = 96;
+        img.loading = "lazy";
+        img.decoding = "async";
+        button.appendChild(img);
+        button.addEventListener("click", () => selectSticker(sticker.id));
+        $("stickerGrid").appendChild(button);
+        stickerButtons.push([sticker.id, button]);
+      }
+      updateStickerSelection();
+    }
+
+    function closeStickerPicker() {
+      $("stickerPanel").hidden = true;
+      $("stickerToggle").setAttribute("aria-expanded", "false");
+      selectedSticker = null;
+      stickerButtons = [];
+      $("stickerGrid").innerHTML = "";
+      updateStickerSelection();
+    }
+
+    function toggleStickerPicker() {
+      if (!isStickerRoom()) return;
+      if (!$("stickerPanel").hidden) { closeStickerPicker(); return; }
+      $("stickerPanel").hidden = false;
+      $("stickerToggle").setAttribute("aria-expanded", "true");
+      showStickerPack();
+    }
+
+    async function sendSticker() {
+      const book = currentBook;
+      const sticker = selectedSticker;
+      if (!isStickerRoom(book) || !sticker || book.sendingSticker || $("stickerPanel").hidden) return;
+      book.sendingSticker = true;
+      updateStickerSelection();
+      try {
+        await storeMessage(book, STICKER_PREFIX + sticker.id);
+        if (currentBook !== book) return;
+        closeStickerPicker();
+        $("text").focus();
+      } catch {
+        if (currentBook === book) alert("이모티콘을 보내지 못했습니다. 다시 시도하세요.");
+      } finally {
+        book.sendingSticker = false;
+        if (currentBook === book) updateStickerSelection();
+      }
+    }
 
     async function openBook() {
       if (opening || currentBook) return;
@@ -325,6 +485,7 @@
 
         loginEl.style.display = "none";
         sheetEl.style.display = "flex";
+        $("stickerToggle").hidden = !isStickerRoom(book);
         $("text").focus();
 
         const msgsRef = collection(db, "rooms", book.roomId, "messages");
@@ -394,13 +555,26 @@
         appendRow(`${escapeHtml(sender)}:`, "namerow");
         lastSender = sender;
       }
-      // 메시지 텍스트 옆에 시간 표시
-      appendRow(`${escapeHtml(text)}<span class="msgtime">${timeStr(time)}</span>`, "msgrow");
+      // 이 방에서만 허용된 로컬 이미지로 해석합니다. 임의 URL/HTML은 실행하지 않습니다.
+      const sticker = isStickerRoom() && text.startsWith(STICKER_PREFIX)
+        ? STICKERS.get(text.slice(STICKER_PREFIX.length)) : null;
+      const content = sticker
+        ? `<img class="sticker-message" src="${sticker.src}" alt="${escapeHtml(sticker.label)}" width="160" height="160" loading="lazy" decoding="async">`
+        : escapeHtml(text);
+      appendRow(`${content}<span class="msgtime">${timeStr(time)}</span>`, "msgrow");
     }
 
     function escapeHtml(s) {
       return String(s).replace(/[&<>"']/g, (c) =>
         ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]));
+    }
+
+    async function storeMessage(book, text) {
+      const { iv, ct } = await encryptText(book.key, text);
+      if (currentBook !== book) return;
+      await addDoc(collection(db, "rooms", book.roomId, "messages"), {
+        sender: book.name, iv, ct, createdAt: serverTimestamp()
+      });
     }
 
     async function addRow() {
@@ -411,11 +585,7 @@
       input.value = "";
       input.style.height = "auto";
       try {
-        const { iv, ct } = await encryptText(book.key, text);
-        if (currentBook !== book) return;
-        await addDoc(collection(db, "rooms", book.roomId, "messages"), {
-          sender: book.name, iv, ct, createdAt: serverTimestamp()
-        });
+        await storeMessage(book, text);
       } catch {
         if (currentBook !== book) return;
         input.value = text + (input.value ? "\n" + input.value : "");
@@ -425,6 +595,8 @@
 
     function closeBook() {
       currentBook = null;
+      closeStickerPicker();
+      $("stickerToggle").hidden = true;
       if (unsubscribe) unsubscribe();
       unsubscribe = null;
       sessionStorage.removeItem("book");
@@ -464,6 +636,13 @@
     $("enter").addEventListener("click", openBook);
     $("add").addEventListener("click", addRow);
     $("close").addEventListener("click", closeBook);
+    $("stickerToggle").addEventListener("click", toggleStickerPicker);
+    $("stickerClose").addEventListener("click", () => { closeStickerPicker(); $("stickerToggle").focus(); });
+    $("stickerPack").addEventListener("change", showStickerPack);
+    $("stickerSend").addEventListener("click", sendSticker);
+    $("stickerPanel").addEventListener("keydown", e => {
+      if (e.key === "Escape") { closeStickerPicker(); $("stickerToggle").focus(); }
+    });
     ["name", "pass"].forEach((id) =>
       $(id).addEventListener("keydown", (e) => {
         if (e.isComposing || e.keyCode === 229) return;

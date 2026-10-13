@@ -8,7 +8,8 @@
 - 종단간 암호화 (공유 비밀번호 기반 AES-GCM)
 - **최대 3개 방**: 이름 + 암호만 입력하면 해당 방으로 자동 연결 (현재 기존 방 + 추가 방 1개 활성)
 - **위장 UI**: "보호된 통합 문서 / 실적_분석.xlsx" 처럼 보이는 스프레드시트(엑셀) 테마
-- 서버 코드 불필요 (`index.html`만으로 실행되는 정적 사이트)
+- 두 번째 방 전용 움직이는 이모티콘 48개
+- 서버 코드 불필요 (`index.html` + `assets/`로 실행되는 정적 사이트)
 
 ## 방 연결 방식과 기존 대화 보존
 
@@ -41,8 +42,24 @@ node scripts/configure-room.mjs 3
 두 번째 방도 `node scripts/configure-room.mjs 2`로 설정할 수 있지만,
 사용 중인 방의 암호를 바꾸면 이전 암호로 암호화된 대화는 새 암호로 읽을 수 없습니다.
 
-현재 적용할 파일은 `index.html`과 `firestore.rules`입니다.
+사이트 배포에는 `index.html`과 `assets/`가 필요하고, Firebase에는 `firestore.rules`를 적용합니다.
 Firestore 규칙이 기존 단일 방 설정인 상태에서는 두 번째 방에 접근할 수 없습니다.
+
+### 두 번째 방 이모티콘
+
+입력창 옆 **☺** → 묶음/이모티콘 선택 → **보내기**로 전송합니다.
+기존 방과 세 번째 방에는 이 기능이 표시되지 않습니다.
+
+- 제작자의 사용 허가에 따라 [리센느 X 안원잘부 2](https://e.kakao.com/t/helloiamwoninicetomeetyou-2),
+  [시즌1](https://e.kakao.com/t/helloiamwoninicetomeetyou-s1)의 공개 움직이는 미리보기 WebP를 각각 24개 사용합니다.
+- 이미지는 `assets/stickers/`에서 GitHub Pages로 제공하며 Firebase Storage를 사용하지 않습니다.
+  선택창을 열었을 때 해당 묶음을 만들고, 이미지는 지연 로딩합니다.
+- Firestore에는 구분자 1바이트 + ID 3바이트만 기존 AES-GCM으로 암호화해 저장합니다.
+  `ct`는 Base64 28자, `iv`는 16자이며 발신자/시간 및 Firestore 문서·색인 크기는 별도입니다.
+  이미지나 URL, 카탈로그를 Firestore에 저장하지 않습니다.
+- 선택과 미리보기에는 Firestore 요청이 없고, 전송 1회는 기존 메시지처럼 문서 1회 쓰기입니다.
+  수신·기록 조회의 읽기 사용량과 기존 기록 보관 정책은 동일합니다.
+- 이미지는 정적 공개 파일입니다. 방 제한은 채팅 화면의 선택·표시에 적용됩니다.
 
 ---
 
@@ -116,7 +133,7 @@ Firebase 콘솔 → **Firestore Database → 규칙** 탭에서
 
 ### 방법 A — 웹에서 (가장 쉬움)
 1. GitHub에서 **New repository** 생성 (Public)
-2. **Add file → Upload files** 로 `index.html` 업로드 후 커밋
+2. **Add file → Upload files** 로 `index.html`과 `assets/` 폴더 업로드 후 커밋
 3. 저장소 **Settings → Pages**
 4. **Source: Deploy from a branch**, Branch: `main` / `/root` 선택 후 Save
 5. 1~2분 뒤 `https://<사용자명>.github.io/<저장소명>/` 주소가 생깁니다.

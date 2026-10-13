@@ -17,12 +17,14 @@ const secondRoomId = `${legacyRoomId}-2`;
 
 function element() {
   return {
-    style: {}, value: "", children: [], disabled: false,
+    style: {}, value: "", children: [], disabled: false, hidden: false, attributes: {}, events: {},
     scrollTop: 0, scrollHeight: 100, firstElementChild: {},
     set innerHTML(value) { this.markup = value; this.children = []; },
     get innerHTML() { return this.markup || ""; },
     appendChild(child) { this.children.push(child); },
-    addEventListener() {}, focus() {}
+    setAttribute(name, value) { this.attributes[name] = value; },
+    removeAttribute(name) { delete this.attributes[name]; delete this[name]; },
+    addEventListener(name, handler) { this.events[name] = handler; }, focus() {}
   };
 }
 
@@ -44,6 +46,8 @@ function createApp(source = testScript) {
   const subscriptions = [];
   const writes = [];
   const alerts = [];
+  for (const id of ["stickerPanel", "stickerToggle", "stickerPreview"]) get(id).hidden = true;
+  get("stickerPack").value = "2";
   const context = vm.createContext({
     TextEncoder, TextDecoder, Uint8Array, btoa, atob, crypto: webcrypto,
     document: { getElementById: get, querySelector: get, createElement: element },
@@ -205,4 +209,122 @@ test("세 번째 암호를 나중에 등록해도 기존 두 방 연결 유지",
   assert.equal(await app.run('resolveRoomId("third-test-password")'), `${legacyRoomId}-3`);
   assert.equal(await app.run('resolveRoomId("second-test-password")'), secondRoomId);
   assert.equal(await app.run('resolveRoomId("old-pass")'), legacyRoomId);
+});
+
+test("이모티콘은 두 번째 방에서만 열리고 선택·미리보기에 Firebase 요청 없음", async () => {
+  const app = createApp();
+  await app.open("old-pass");
+  assert.equal(app.get("stickerToggle").hidden, true);
+  app.run('toggleStickerPicker(); selectSticker("201")');
+  await app.run("sendSticker()");
+  assert.equal(app.get("stickerPanel").hidden, true);
+  assert.equal(app.get("stickerGrid").children.length, 0);
+  assert.equal(app.writes.length, 0);
+  app.run("closeBook()");
+  await app.open("second-test-password");
+  assert.equal(app.get("stickerToggle").hidden, false);
+  app.get("stickerToggle").events.click();
+  assert.equal(app.get("stickerGrid").children.length, 24);
+  assert.equal(app.get("stickerSend").disabled, true);
+  app.get("stickerGrid").children[0].events.click();
+  assert.equal(app.get("stickerPreview").src, "assets/stickers/wonni-2/01.webp");
+  assert.equal(app.get("stickerSend").disabled, false);
+  assert.equal(app.writes.length, 0);
+  assert.equal(app.subscriptions.length, 2);
+  app.get("stickerPack").value = "1";
+  app.get("stickerPack").events.change();
+  assert.equal(app.get("stickerGrid").children.length, 24);
+  assert.equal(app.get("stickerGrid").children[23].children[0].src, "assets/stickers/wonni-s1/24.webp");
+  assert.equal(app.get("stickerSend").disabled, true);
+  app.run("closeBook()");
+  assert.equal(app.get("stickerPanel").hidden, true);
+  assert.equal(app.get("stickerToggle").hidden, true);
+  assert.equal(app.get("stickerGrid").children.length, 0);
+});
+
+test("48개 ID의 정적 WebP 파일이 모두 존재하고 카탈로그 ID가 중복되지 않음", async () => {
+  const app = createApp();
+  const catalog = app.run("Array.from(STICKERS.values())");
+  assert.equal(catalog.length, 48);
+  for (const sticker of catalog) {
+    assert.match(sticker.id, /^[12](0[1-9]|1[0-9]|2[0-4])$/);
+    const image = await readFile(new URL(`../${sticker.src}`, import.meta.url));
+    assert.equal(image.toString("ascii", 0, 4), "RIFF");
+    assert.equal(image.toString("ascii", 8, 12), "WEBP");
+  }
+});
+
+test("이미지 대신 4바이트 코드만 암호화하여 한 문서에 저장하고 다른 사용자가 표시", async () => {
+  const alice = createApp();
+  const bob = createApp();
+  await Promise.all([alice.open("second-test-password"), bob.open("second-test-password")]);
+  alice.get("text").value = "작성 중인 초안";
+  alice.run('toggleStickerPicker(); selectSticker("201")');
+  await alice.get("stickerSend").events.click();
+  assert.equal(alice.writes.length, 1);
+  const { path, data } = alice.writes[0];
+  assert.equal(path, `rooms/${secondRoomId}/messages`);
+  assert.deepEqual(Object.keys(data).sort(), ["createdAt", "ct", "iv", "sender"]);
+  assert.equal(data.ct.length, 28);
+  assert.equal(data.iv.length, 16);
+  const plaintext = await alice.run(`decryptText(currentBook.key, "${data.iv}", "${data.ct}")`);
+  assert.equal(plaintext, "\u001e201");
+  assert.equal(Buffer.byteLength(plaintext), 4);
+  assert.equal(alice.get("text").value, "작성 중인 초안");
+  assert.equal(alice.get("stickerPanel").hidden, true);
+  await bob.subscriptions[0].next(snapshot(data));
+  assert.match(bob.get("rows").children[1].innerHTML, /class="sticker-message" src="assets\/stickers\/wonni-2\/01.webp"/);
+});
+
+test("등록되지 않은 ID와 임의 HTML은 이미지로 해석하지 않으며 기존 방도 해석하지 않음", async () => {
+  const app = createApp();
+  await app.open("second-test-password");
+  for (const text of ["\u001e999", "\u001e201 extra", "\u001ehttps://example.com/image.webp", '<img src=x onerror="alert(1)">']) {
+    app.run(`renderRow("sender", ${JSON.stringify(text)})`);
+    assert.doesNotMatch(app.get("rows").children.at(-1).innerHTML, /<img/);
+  }
+  assert.match(app.get("rows").children.at(-1).innerHTML, /&lt;img/);
+  app.run("closeBook()");
+  await app.open("old-pass");
+  app.run('renderRow("sender", STICKER_PREFIX + "201")');
+  assert.doesNotMatch(app.get("rows").children.at(-1).innerHTML, /<img/);
+  const hash = pbkdf2Sync("third-test-password", "chat-room-routing:chatting-99de3", 100000, 32, "sha256").toString("hex");
+  app.run(`closeBook(); ADDITIONAL_ROOMS[1].passwordHash = "${hash}"`);
+  await app.open("third-test-password");
+  assert.equal(app.get("stickerToggle").hidden, true);
+  app.run('toggleStickerPicker(); selectSticker("201")');
+  await app.run("sendSticker()");
+  assert.equal(app.writes.length, 0);
+});
+
+test("이모티콘 전송 실패 후 선택을 유지하여 재시도하며 중복 클릭은 한 번만 전송", async () => {
+  const app = createApp();
+  await app.open("second-test-password");
+  const originalAddDoc = app.context.addDoc;
+  app.context.addDoc = async () => { throw new Error("offline"); };
+  app.run('toggleStickerPicker(); selectSticker("124")');
+  await app.run("sendSticker()");
+  assert.equal(app.alerts.length, 1);
+  assert.equal(app.get("stickerPanel").hidden, false);
+  assert.equal(app.get("stickerSend").disabled, false);
+  assert.equal(app.run("selectedSticker.id"), "124");
+  app.context.addDoc = originalAddDoc;
+  await Promise.all([app.run("sendSticker()"), app.run("sendSticker()")]);
+  assert.equal(app.writes.length, 1);
+});
+
+test("이모티콘 암호화 중 방을 닫으면 저장을 취소하고 다음 세션 선택을 보존", async () => {
+  const app = createApp();
+  await app.open("second-test-password");
+  app.run('toggleStickerPicker(); selectSticker("201"); encryptText = () => new Promise(resolve => { globalThis.releaseEncrypt = resolve; })');
+  const pending = app.run("sendSticker()");
+  app.run("closeBook()");
+  await app.open("second-test-password");
+  app.run('toggleStickerPicker(); selectSticker("224")');
+  app.context.releaseEncrypt({ iv: "iv", ct: "ct" });
+  await pending;
+  assert.equal(app.writes.length, 0);
+  assert.equal(app.run("selectedSticker.id"), "224");
+  assert.equal(app.get("stickerPanel").hidden, false);
+  assert.equal(app.get("stickerSend").disabled, false);
 });

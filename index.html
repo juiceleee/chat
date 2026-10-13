@@ -87,6 +87,20 @@
     border: 1px solid #c5c5c5; padding: 4px 10px; border-radius: 4px;
   }
   .xl-menu .close:hover { background: #eee; }
+  .document-actions { display: flex; align-items: center; gap: 6px; }
+  .presence { position: relative; }
+  .presence-panel {
+    position: absolute; top: calc(100% + 6px); right: 0; z-index: 12;
+    width: 190px; max-width: calc(100vw - 32px); padding: 12px;
+    background: #fff; border: 1px solid #d2d2d2; border-radius: 4px;
+    box-shadow: 0 3px 10px #0001; font-size: 12px; line-height: 1.6; color: #555;
+  }
+  .presence-heading { font-weight: 600; color: #444; }
+  .presence-list { list-style: none; padding: 0; margin: 7px 0; max-height: 200px; overflow-y: auto; }
+  .presence-list li { display: flex; align-items: baseline; gap: 8px; padding: 3px 0; overflow-wrap: anywhere; }
+  .presence-list li span { min-width: 0; }
+  .presence-list small { margin-left: auto; flex-shrink: 0; color: #888; font-size: 11px; }
+  .presence-note { margin: 4px 0 0; font-size: 11px; color: #888; }
   .xl-menu .notification-toggle[aria-checked="true"] { background: #eaf4ee; border-color: var(--xl-green); color: var(--xl-green); }
   .notification-toast {
     position: fixed; right: 14px; bottom: 70px; z-index: 10; display: flex; align-items: center; gap: 12px;
@@ -234,7 +248,17 @@
         <span class="size" id="fontSize">14</span>
         <button id="fontPlus" title="확대">+</button>
       </div>
-      <button class="close" id="close">닫기</button>
+      <div class="document-actions">
+        <div class="presence" id="presenceControl">
+          <button class="close" id="presenceToggle" aria-expanded="false" aria-controls="presencePanel" title="현재 접속자 보기">접속 …</button>
+          <div class="presence-panel" id="presencePanel" role="region" aria-label="현재 접속자" hidden>
+            <div class="presence-heading">현재 접속</div>
+            <ul class="presence-list" id="presenceList"></ul>
+            <p class="presence-note" id="presenceNote">연결 확인 중</p>
+          </div>
+        </div>
+        <button class="close" id="close">닫기</button>
+      </div>
     </div>
 
     <div class="xl-formula">
@@ -290,6 +314,7 @@
   </div>
 
   <script type="module">
+    import { createPresenceClient } from "./presence.mjs";
     import { initializeApp } from "https://www.gstatic.com/firebasejs/10.12.2/firebase-app.js";
     import {
       getFirestore, collection, addDoc, query, orderBy, onSnapshot, serverTimestamp, limitToLast
@@ -302,6 +327,7 @@
       apiKey: "AIzaSyDJmPA-dDphGDV8itduujWu3XxrwfQOaJY",
       authDomain: "chatting-99de3.firebaseapp.com",
       projectId: "chatting-99de3",
+      databaseURL: "https://chatting-99de3-default-rtdb.firebaseio.com",
       storageBucket: "chatting-99de3.firebasestorage.app",
       messagingSenderId: "128388856345",
       appId: "1:128388856345:web:b5aea60f98e024c4388888",
@@ -423,6 +449,74 @@
     const stickerReplayRequests = new WeakMap();
     let desktopNotification = null;
     let notificationToastTimer = null;
+
+    // A separate app keeps anonymous presence authentication out of Firestore.
+    let presenceBackendPromise;
+    function loadPresenceBackend() {
+      if (!presenceBackendPromise) presenceBackendPromise = (async () => {
+        const [authSDK, rtdb] = await Promise.all([
+          import("https://www.gstatic.com/firebasejs/10.12.2/firebase-auth.js"),
+          import("https://www.gstatic.com/firebasejs/10.12.2/firebase-database.js")
+        ]);
+        const app = initializeApp(firebaseConfig, "presence");
+        const auth = authSDK.getAuth(app);
+        await auth.authStateReady();
+        if (!auth.currentUser) await authSDK.signInAnonymously(auth);
+        const database = rtdb.getDatabase(app);
+        return {
+          uid: auth.currentUser.uid,
+          ref: path => rtdb.ref(database, path),
+          push: rtdb.push, onValue: rtdb.onValue, onDisconnect: rtdb.onDisconnect,
+          set: rtdb.set, remove: rtdb.remove,
+          goOnline: () => rtdb.goOnline(database), goOffline: () => rtdb.goOffline(database)
+        };
+      })().catch(error => { presenceBackendPromise = null; throw error; });
+      return presenceBackendPromise;
+    }
+
+    function closePresencePanel() {
+      $("presencePanel").hidden = true;
+      $("presenceToggle").setAttribute("aria-expanded", "false");
+    }
+
+    function positionPresencePanel() {
+      const panel = $("presencePanel");
+      if (panel.hidden) return;
+      panel.style.transform = "";
+      const bounds = panel.getBoundingClientRect();
+      const shift = bounds.left < 12 ? 12 - bounds.left : bounds.right > innerWidth - 12 ? innerWidth - 12 - bounds.right : 0;
+      panel.style.transform = `translateX(${shift}px)`;
+    }
+
+    function renderPresence({ status, members }) {
+      const online = status === "online";
+      $("presenceToggle").textContent = online ? `접속 ${members.length}` : status === "connecting" ? "접속 …" : "접속 —";
+      $("presenceToggle").setAttribute("aria-label", online ? `현재 접속 ${members.length}명, 접속자 보기` : "현재 접속자 보기");
+      $("presenceList").innerHTML = "";
+      for (const member of online ? members : []) {
+        const row = document.createElement("li");
+        const name = document.createElement("span");
+        name.textContent = member.name;
+        row.appendChild(name);
+        if (member.isSelf) {
+          const self = document.createElement("small");
+          self.textContent = "나";
+          row.appendChild(self);
+        }
+        $("presenceList").appendChild(row);
+      }
+      $("presenceNote").textContent = online ? "같은 방에 연결된 사용자입니다." : status === "connecting" ? "연결 확인 중" : status === "offline" ? "연결이 끊겼습니다." : "접속 상태를 확인할 수 없습니다.";
+    }
+
+    function startPresence(book) {
+      book.presence = createPresenceClient({
+        load: loadPresenceBackend,
+        encrypt: text => encryptText(book.key, text),
+        decrypt: value => decryptText(book.key, value.iv, value.ct),
+        onChange: state => { if (currentBook === book) renderPresence(state); }
+      });
+      void book.presence.start(book);
+    }
 
     const notificationPreferenceKey = roomId => "chatNotifications:" + roomId;
 
@@ -729,6 +823,7 @@
         sheetEl.style.display = "flex";
         configureStickerPicker(book);
         updateNotificationToggle();
+        startPresence(book);
         $("text").focus();
 
         const msgsRef = collection(db, "rooms", book.roomId, "messages");
@@ -860,7 +955,10 @@
     }
 
     function closeBook() {
+      currentBook?.presence?.stop();
       currentBook = null;
+      closePresencePanel();
+      renderPresence({ status: "connecting", members: [] });
       clearNotifications();
       updateNotificationToggle();
       closeStickerPicker();
@@ -913,6 +1011,26 @@
     $("enter").addEventListener("click", openBook);
     $("add").addEventListener("click", addRow);
     $("close").addEventListener("click", closeBook);
+    $("presenceToggle").addEventListener("click", () => {
+      const open = $("presencePanel").hidden;
+      $("presencePanel").hidden = !open;
+      $("presenceToggle").setAttribute("aria-expanded", String(open));
+      positionPresencePanel();
+    });
+    globalThis.addEventListener("resize", positionPresencePanel);
+    document.addEventListener("click", e => {
+      if (!$("presenceControl").contains(e.target)) closePresencePanel();
+    });
+    document.addEventListener("keydown", e => {
+      if (e.key === "Escape" && !$("presencePanel").hidden) {
+        closePresencePanel();
+        $("presenceToggle").focus();
+      }
+    });
+    globalThis.addEventListener("pagehide", () => currentBook?.presence?.stop());
+    globalThis.addEventListener("pageshow", e => {
+      if (e.persisted && currentBook) startPresence(currentBook);
+    });
     $("notificationsToggle").addEventListener("click", toggleNotifications);
     $("notificationOpen").addEventListener("click", () => openNotificationChat());
     $("notificationDismiss").addEventListener("click", clearNotifications);

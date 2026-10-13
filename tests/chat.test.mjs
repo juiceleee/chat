@@ -22,6 +22,8 @@ function element() {
     set innerHTML(value) { this.markup = value; this.children = []; },
     get innerHTML() { return this.markup || ""; },
     appendChild(child) { this.children.push(child); },
+    contains(target) { return target === this || this.children.some(child => child.contains(target)); },
+    getBoundingClientRect() { return { left: 100, right: 290 }; },
     setAttribute(name, value) { this.attributes[name] = value; },
     removeAttribute(name) { delete this.attributes[name]; delete this[name]; },
     addEventListener(name, handler) { this.events[name] = handler; },
@@ -51,6 +53,7 @@ function createApp(source = testScript) {
   const objectUrls = [];
   const revokedUrls = [];
   const notifications = [];
+  const presenceClients = [];
   const timers = new Map();
   const windowEvents = {};
   const documentEvents = {};
@@ -63,9 +66,9 @@ function createApp(source = testScript) {
     constructor(title, options) { this.title = title; this.options = options; notifications.push(this); }
     close() { this.closed = true; }
   }
-  for (const id of ["stickerPanel", "stickerToggle", "stickerPreview", "notificationToast"]) get(id).hidden = true;
+  for (const id of ["stickerPanel", "stickerToggle", "stickerPreview", "notificationToast", "presencePanel"]) get(id).hidden = true;
   const context = vm.createContext({
-    TextEncoder, TextDecoder, Uint8Array, btoa, atob, crypto: webcrypto,
+    TextEncoder, TextDecoder, Uint8Array, btoa, atob, crypto: webcrypto, innerWidth: 500,
     Notification: MockNotification,
     setTimeout: fn => { timers.set(++nextTimer, fn); return nextTimer; },
     clearTimeout: id => timers.delete(id),
@@ -89,6 +92,13 @@ function createApp(source = testScript) {
     sessionStorage: storage(), localStorage: storage(),
     alert: message => alerts.push(message),
     initializeApp: () => ({}), getFirestore: () => ({}),
+    createPresenceClient: options => {
+      const client = { options, stopped: false,
+        start(book) { this.book = book; options.onChange({ status: "connecting", members: [] }); },
+        stop() { this.stopped = true; } };
+      presenceClients.push(client);
+      return client;
+    },
     collection: (_db, ...path) => path.join("/"),
     query: (path, ...constraints) => ({ path, constraints }),
     orderBy: (...args) => args, limitToLast: count => ({ limitToLast: count }),
@@ -103,7 +113,7 @@ function createApp(source = testScript) {
   vm.runInContext(source, context);
   return {
     context, get, subscriptions, writes, alerts, downloads, objectUrls, revokedUrls,
-    notifications, timers, windowEvents, documentEvents,
+    notifications, timers, windowEvents, documentEvents, presenceClients,
     get permissionRequests() { return permissionRequests; },
     get windowFocusCalls() { return windowFocusCalls; },
     run: code => vm.runInContext(code, context),
@@ -125,6 +135,47 @@ function snapshot(data, options = {}) {
     doc: { id: options.id || `${data.iv}:${data.ct}`, metadata: { hasPendingWrites: !!options.pending }, data: () => data }
   }] : [] };
 }
+
+test("접속 목록은 같은 방의 암호화 이름을 표시하고 닫기·방 전환·페이지 복귀를 처리", async () => {
+  const app = createApp();
+  await app.open("old-pass");
+  const original = app.presenceClients[0];
+  assert.equal(original.book.roomId, legacyRoomId);
+  const encrypted = await original.options.encrypt("접속 이름");
+  assert.notEqual(encrypted.ct, "접속 이름");
+  assert.equal(await original.options.decrypt(encrypted), "접속 이름");
+  original.options.onChange({ status: "online", members: [
+    { name: "나", isSelf: true }, { name: "<img onerror=alert(1)>", isSelf: false }
+  ] });
+  assert.equal(app.get("presenceToggle").textContent, "접속 2");
+  assert.equal(app.get("presenceList").children[1].children[0].textContent, "<img onerror=alert(1)>");
+  assert.equal(app.get("presenceList").children[1].children[0].innerHTML, "");
+  app.get("presenceToggle").events.click();
+  assert.equal(app.get("presencePanel").hidden, false);
+  app.get("presencePanel").getBoundingClientRect = () => ({ left: -40, right: 150 });
+  app.windowEvents.resize();
+  assert.equal(app.get("presencePanel").style.transform, "translateX(52px)");
+  app.documentEvents.keydown({ key: "Escape" });
+  assert.equal(app.get("presencePanel").hidden, true);
+  app.get("presenceToggle").events.click();
+  app.documentEvents.click({ target: app.get("text") });
+  assert.equal(app.get("presencePanel").hidden, true);
+  original.options.onChange({ status: "unavailable", members: [] });
+  assert.equal(app.get("presenceToggle").textContent, "접속 —");
+  assert.equal(app.subscriptions[0].closed, false);
+  assert.equal(app.writes.length, 0);
+  app.run("closeBook()");
+  assert.equal(original.stopped, true);
+  await app.open("second-test-password");
+  original.options.onChange({ status: "online", members: [{ name: "이전 방" }] });
+  assert.equal(app.get("presenceToggle").textContent, "접속 …");
+  assert.equal(app.presenceClients[1].book.roomId, secondRoomId);
+  app.windowEvents.pagehide();
+  assert.equal(app.presenceClients[1].stopped, true);
+  app.windowEvents.pageshow({ persisted: true });
+  assert.equal(app.presenceClients.length, 3);
+  assert.equal(app.presenceClients[2].book.roomId, secondRoomId);
+});
 
 async function incomingMessage(app, text = "비공개 대화 내용", sender = "친구", time = Date.now()) {
   const encrypted = await app.run(`encryptText(currentBook.key, ${JSON.stringify(text)})`);

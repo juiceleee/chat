@@ -10,7 +10,8 @@
 - **위장 UI**: "보호된 통합 문서 / 실적_분석.xlsx" 처럼 보이는 스프레드시트(엑셀) 테마
 - 방별 전용 이모티콘 (기존 방 88개, 두 번째 방 48개)
 - 새 메시지 배너 알림 (무음, 방별 켜기/끄기, 클릭하면 채팅창으로 이동)
-- 서버 코드 불필요 (`index.html` + `assets/`로 실행되는 정적 사이트)
+- 같은 방 접속자 목록 (Realtime Database 연결 감지, 이름 암호화)
+- 서버 코드 불필요 (`index.html` + `presence.mjs` + `assets/`로 실행되는 정적 사이트)
 
 ## 방 연결 방식과 기존 대화 보존
 
@@ -38,13 +39,37 @@ Node.js 20 이상이 설치된 로컬 터미널에서 실행하고 암호를 두
 node scripts/configure-room.mjs 3
 ```
 
-이 명령은 `index.html`의 해당 방 설정과 `firestore.rules`의 허용 목록을 수정합니다.
-변경한 HTML을 배포하고, 아래 4번 절차로 Firestore 규칙도 게시해야 활성화됩니다.
+이 명령은 `index.html`의 해당 방 설정과 `firestore.rules`, `database.rules.json`의 허용 목록을 수정합니다.
+변경한 HTML을 배포하고, Firestore와 Realtime Database에 각각 규칙을 게시해야 활성화됩니다.
 두 번째 방도 `node scripts/configure-room.mjs 2`로 설정할 수 있지만,
 사용 중인 방의 암호를 바꾸면 이전 암호로 암호화된 대화는 새 암호로 읽을 수 없습니다.
 
-사이트 배포에는 `index.html`과 `assets/`가 필요하고, Firebase에는 `firestore.rules`를 적용합니다.
+사이트 배포에는 `index.html`, `presence.mjs`, `assets/`가 필요합니다.
+Firebase의 Firestore에는 `firestore.rules`, Realtime Database에는 `database.rules.json`을 적용합니다.
 Firestore 규칙이 기존 단일 방 설정인 상태에서는 두 번째 방에 접근할 수 없습니다.
+
+### 현재 접속자
+
+**닫기** 왼쪽의 **접속 3**을 누르면 같은 방의 접속 이름이 펼쳐집니다. 본인은 **나**로 표시합니다.
+엑셀 메뉴와 같은 작은 회색 버튼이며, 바깥쪽 클릭이나 Esc로 닫습니다.
+
+- 방에 입장해서 서버와 연결된 사용자입니다. 화면을 실제로 보고 있는지 확인하는 기능은 아닙니다.
+- 같은 브라우저 프로필의 여러 탭은 한 명으로 묶습니다. 다른 브라우저·기기·시크릿 창은 별도로 셀 수 있습니다.
+- 닫기/페이지 종료 시 접속 정보를 지우고, 비정상 종료·네트워크 단절은 서버의 `onDisconnect`가 정리합니다.
+  네트워크 단절을 서버가 알아차릴 때까지 잠시 남을 수 있습니다.
+- 내 연결을 확인할 수 없으면 숫자 대신 **…** 또는 **—**를 표시합니다.
+- 익명 인증으로 각 브라우저가 자기 접속 정보만 쓰고 지울 수 있습니다. 이름은 방의 키로 암호화합니다.
+  로그인 화면이나 별도 계정 가입은 없습니다. 익명 UID는 사람의 실제 신원을 확인하지 않으며,
+  규칙 자체가 방 암호를 검증하는 것은 아닙니다. 다른 암호로 암호화된 이름은 목록에서 제외합니다.
+- Realtime Database에 현재 연결 정보만 저장하고 주기적인 상태 갱신 쓰기·접속 기록은 만들지 않습니다.
+  Firestore 읽기/쓰기를 추가하지 않습니다. Realtime Database 자체 연결·트래픽 사용량은 발생합니다.
+- 익명 인증은 별도 Firebase 앱에서 실행해 기존 Firestore 구독과 분리합니다.
+  접속 상태 저장소가 실패해도 메시지·알림·이모티콘은 계속 동작합니다.
+
+처음 설정할 때 Firebase 콘솔에서 **Authentication → 로그인 방법 → 익명**을 활성화하고,
+**Realtime Database**를 잠금 모드로 생성한 뒤 **규칙**에 [`database.rules.json`](database.rules.json)을 게시합니다.
+`firebaseConfig.databaseURL`은 생성된 데이터베이스 URL과 일치해야 합니다.
+기존 Firestore 대화 데이터와 규칙을 바꾸지 않습니다. Cloud Functions나 유료 플랜 전환은 필요하지 않습니다.
 
 ### 새 메시지 배너 알림
 
@@ -170,7 +195,7 @@ Firebase 콘솔 → **Firestore Database → 규칙** 탭에서
 
 ### 방법 A — 웹에서 (가장 쉬움)
 1. GitHub에서 **New repository** 생성 (Public)
-2. **Add file → Upload files** 로 `index.html`과 `assets/` 폴더 업로드 후 커밋
+2. **Add file → Upload files** 로 `index.html`, `presence.mjs`, `assets/` 폴더 업로드 후 커밋
 3. 저장소 **Settings → Pages**
 4. **Source: Deploy from a branch**, Branch: `main` / `/root` 선택 후 Save
 5. 1~2분 뒤 `https://<사용자명>.github.io/<저장소명>/` 주소가 생깁니다.

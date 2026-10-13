@@ -1,0 +1,20 @@
+{
+  "rules": {
+    ".read": false,
+    ".write": false,
+    "presence": {
+      "$room": {
+        ".read": "auth != null && ($room === 'sjchat-private-2026' || $room === 'sjchat-private-2026-2')",
+        "$uid": {
+          "$connection": {
+            ".write": "auth != null && auth.uid === $uid && ($room === 'sjchat-private-2026' || $room === 'sjchat-private-2026-2')",
+            ".validate": "newData.hasChildren(['iv', 'ct'])",
+            "iv": { ".validate": "newData.isString() && newData.val().length === 16" },
+            "ct": { ".validate": "newData.isString() && newData.val().length > 0 && newData.val().length <= 1024" },
+            "$other": { ".validate": false }
+          }
+        }
+      }
+    }
+  }
+}

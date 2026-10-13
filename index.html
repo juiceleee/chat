@@ -163,7 +163,7 @@
   .sticker-footer span { flex: 1; color: var(--text-dim); }
   .sticker-footer button { padding: 8px 16px; background: var(--xl-green); color: #fff; border-radius: 4px; }
   .sticker-panel button:disabled { opacity: .5; cursor: default; }
-  .sticker-message { display: block; width: min(160px, 100%); height: auto; aspect-ratio: 1; object-fit: contain; }
+  .sticker-message { display: block; width: min(80px, 100%); height: auto; aspect-ratio: 1; object-fit: contain; }
   @media (max-width: 480px) {
     .sticker-grid { grid-template-columns: repeat(4, minmax(0, 1fr)); }
   }
@@ -559,7 +559,7 @@
       const sticker = isStickerRoom() && text.startsWith(STICKER_PREFIX)
         ? STICKERS.get(text.slice(STICKER_PREFIX.length)) : null;
       const content = sticker
-        ? `<img class="sticker-message" src="${sticker.src}" alt="${escapeHtml(sticker.label)}" width="160" height="160" loading="lazy" decoding="async">`
+        ? `<img class="sticker-message" src="${sticker.src}" alt="${escapeHtml(sticker.label)}" width="80" height="80" loading="lazy" decoding="async">`
         : escapeHtml(text);
       appendRow(`${content}<span class="msgtime">${timeStr(time)}</span>`, "msgrow");
     }

@@ -1,0 +1,208 @@
+import assert from "node:assert/strict";
+import { pbkdf2Sync, webcrypto } from "node:crypto";
+import { readFile } from "node:fs/promises";
+import test from "node:test";
+import vm from "node:vm";
+
+const html = await readFile(new URL("../index.html", import.meta.url), "utf8");
+const script = html.match(/<script type="module">([\s\S]*?)<\/script>/)[1]
+  .replace(/import\s+[\s\S]*?\s+from\s+"[^"]+";/g, "");
+// 실제 운영 암호를 테스트 파일에 남기지 않고 별도 테스트 암호를 주입합니다.
+const configPattern = /const ADDITIONAL_ROOMS = (\[[\s\S]*?\]);/;
+const testRooms = JSON.parse(script.match(configPattern)[1]);
+testRooms[0].passwordHash = pbkdf2Sync("second-test-password", "chat-room-routing:chatting-99de3", 100000, 32, "sha256").toString("hex");
+const testScript = script.replace(configPattern, `const ADDITIONAL_ROOMS = ${JSON.stringify(testRooms)};`);
+const legacyRoomId = "sjchat-private-2026";
+const secondRoomId = `${legacyRoomId}-2`;
+
+function element() {
+  return {
+    style: {}, value: "", children: [], disabled: false,
+    scrollTop: 0, scrollHeight: 100, firstElementChild: {},
+    set innerHTML(value) { this.markup = value; this.children = []; },
+    get innerHTML() { return this.markup || ""; },
+    appendChild(child) { this.children.push(child); },
+    addEventListener() {}, focus() {}
+  };
+}
+
+function storage() {
+  const data = new Map();
+  return {
+    getItem: key => data.get(key) ?? null,
+    setItem: (key, value) => data.set(key, value),
+    removeItem: key => data.delete(key)
+  };
+}
+
+function createApp(source = testScript) {
+  const elements = new Map();
+  const get = id => {
+    if (!elements.has(id)) elements.set(id, element());
+    return elements.get(id);
+  };
+  const subscriptions = [];
+  const writes = [];
+  const alerts = [];
+  const context = vm.createContext({
+    TextEncoder, TextDecoder, Uint8Array, btoa, atob, crypto: webcrypto,
+    document: { getElementById: get, querySelector: get, createElement: element },
+    sessionStorage: storage(), localStorage: storage(),
+    alert: message => alerts.push(message),
+    initializeApp: () => ({}), getFirestore: () => ({}),
+    collection: (_db, ...path) => path.join("/"),
+    query: (path, ...constraints) => ({ path, constraints }),
+    orderBy: (...args) => args, limit: count => count,
+    serverTimestamp: () => "server-timestamp",
+    onSnapshot: (query, next, error) => {
+      const subscription = { query, next, error, closed: false };
+      subscriptions.push(subscription);
+      return () => { subscription.closed = true; };
+    },
+    addDoc: async (path, data) => { writes.push({ path, data }); }
+  });
+  vm.runInContext(source, context);
+  return {
+    context, get, subscriptions, writes, alerts,
+    run: code => vm.runInContext(code, context),
+    async open(password, name = "테스트 사용자") {
+      get("name").value = name;
+      get("pass").value = password;
+      await vm.runInContext("openBook()", context);
+    },
+    async send(text) {
+      get("text").value = text;
+      await vm.runInContext("addRow()", context);
+    }
+  };
+}
+
+function snapshot(data) {
+  return { docChanges: () => [{ type: "added", doc: { data: () => data } }] };
+}
+
+test("기존 암호는 기존 경로, 등록 암호는 두 번째 방, 세 번째 방은 비활성", async () => {
+  const app = createApp();
+  assert.equal(await app.run('resolveRoomId("기존-테스트-암호")'), legacyRoomId);
+  assert.equal(await app.run('resolveRoomId("second-test-password")'), secondRoomId);
+  assert.equal(await app.run('resolveRoomId("나중에-정할-암호")'), legacyRoomId);
+  assert.equal(app.run("ADDITIONAL_ROOMS.length"), 2);
+  assert.equal(app.run("ADDITIONAL_ROOMS[1].passwordHash"), "");
+});
+
+test("기존 코드의 키로 암호화한 과거 메시지를 그대로 복호화", async () => {
+  const pass = "legacy-fixture-password";
+  // 기존 코드와 동일한 PBKDF2 salt, 반복 횟수 및 AES-GCM으로 독립 생성합니다.
+  const key = await webcrypto.subtle.importKey(
+    "raw", pbkdf2Sync(pass, `chat-salt:${legacyRoomId}`, 100000, 32, "sha256"),
+    "AES-GCM", false, ["encrypt"]
+  );
+  const iv = webcrypto.getRandomValues(new Uint8Array(12));
+  const ct = await webcrypto.subtle.encrypt({ name: "AES-GCM", iv }, key, new TextEncoder().encode("보존할 예전 대화"));
+  const app = createApp();
+  await app.open(pass);
+  assert.equal(app.subscriptions[0].query.path, `rooms/${legacyRoomId}/messages`);
+  await app.subscriptions[0].next(snapshot({
+    sender: "기존 사용자", iv: Buffer.from(iv).toString("base64"), ct: Buffer.from(ct).toString("base64")
+  }));
+  assert.match(app.get("rows").children[1].innerHTML, /보존할 예전 대화/);
+  assert.doesNotMatch(app.get("rows").children[1].innerHTML, /#VALUE!/);
+});
+
+test("같은 추가 암호로 입장한 두 사용자는 같은 방에서 대화", async () => {
+  const alice = createApp();
+  const bob = createApp();
+  await Promise.all([alice.open("second-test-password", "Alice"), bob.open("second-test-password", "Bob")]);
+  assert.equal(alice.subscriptions[0].query.path, `rooms/${secondRoomId}/messages`);
+  assert.equal(bob.subscriptions[0].query.path, alice.subscriptions[0].query.path);
+  await alice.send("새 방의 메시지");
+  const message = alice.writes[0];
+  assert.equal(message.path, `rooms/${secondRoomId}/messages`);
+  assert.equal(message.data.sender, "Alice");
+  assert.equal(message.data.createdAt, "server-timestamp");
+  assert.notEqual(message.data.ct, "새 방의 메시지");
+  await bob.subscriptions[0].next(snapshot(message.data));
+  assert.match(bob.get("rows").children[1].innerHTML, /새 방의 메시지/);
+});
+
+test("방별 키가 분리되고 기존 방에서 보낸 메시지는 기존 경로에 저장", async () => {
+  const app = createApp();
+  await app.open("기존-테스트-암호");
+  await app.send("기존 방 메시지");
+  assert.equal(app.writes[0].path, `rooms/${legacyRoomId}/messages`);
+  assert.equal(await app.run(`(async () => {
+    const oldKey = await deriveKey("same-password", ROOM_ID);
+    const newKey = await deriveKey("same-password", ADDITIONAL_ROOMS[0].id);
+    const encrypted = await encryptText(oldKey, "분리 확인");
+    return decryptText(newKey, encrypted.iv, encrypted.ct);
+  })()`), "#VALUE!");
+});
+
+test("닫은 뒤 이전 방의 복호화가 끝나도 새 방 화면에 섞이지 않음", async () => {
+  const app = createApp();
+  await app.open("old-pass");
+  app.run("decryptText = () => new Promise(resolve => { globalThis.releaseDecrypt = resolve; })");
+  const oldSubscription = app.subscriptions[0];
+  const pending = oldSubscription.next(snapshot({ sender: "old", iv: "", ct: "" }));
+  await Promise.resolve();
+  assert.equal(typeof app.context.releaseDecrypt, "function");
+  app.get("text").value = "이전 방 초안";
+  app.run("closeBook()");
+  assert.equal(oldSubscription.closed, true);
+  assert.equal(app.get("text").value, "");
+  assert.equal(app.get("pass").value, "");
+  await app.open("second-test-password");
+  app.context.releaseDecrypt("늦게 도착한 이전 대화");
+  await pending;
+  assert.equal(app.get("rows").children.length, 0);
+  oldSubscription.error(new Error("late failure"));
+  assert.equal(app.run("currentBook.roomId"), secondRoomId);
+  assert.equal(app.alerts.length, 0);
+});
+
+test("암호화 도중 방을 바꾸면 전송을 취소하여 다른 방으로 보내지 않음", async () => {
+  const app = createApp();
+  await app.open("old-pass");
+  app.run("encryptText = () => new Promise(resolve => { globalThis.releaseEncrypt = resolve; })");
+  const pending = app.send("이전 방에만 보낼 메시지");
+  app.run("closeBook()");
+  await app.open("second-test-password");
+  app.context.releaseEncrypt({ iv: "iv", ct: "ct" });
+  await pending;
+  assert.equal(app.writes.length, 0);
+});
+
+test("중복 입장은 구독 하나만 만들고 구독 권한 오류 후 재입장 가능", async () => {
+  const app = createApp();
+  await Promise.all([app.open("second-test-password"), app.open("second-test-password")]);
+  assert.equal(app.subscriptions.length, 1);
+  assert.equal(app.get("enter").disabled, false);
+  app.subscriptions[0].error(new Error("permission-denied"));
+  assert.equal(app.run("currentBook"), null);
+  assert.equal(app.get("login").style.display, "block");
+  assert.equal(app.subscriptions[0].closed, true);
+  assert.equal(app.alerts.length, 1);
+  await app.open("old-pass");
+  assert.equal(app.subscriptions[1].query.path, `rooms/${legacyRoomId}/messages`);
+});
+
+test("전송 오류 시 초안을 복구하고 닫힌 방에서는 전송하지 않음", async () => {
+  const app = createApp();
+  await app.open("second-test-password");
+  app.context.addDoc = async () => { throw new Error("permission-denied"); };
+  await app.send("실패한 메시지");
+  assert.equal(app.get("text").value, "실패한 메시지");
+  assert.equal(app.alerts.length, 1);
+  app.run("closeBook()");
+  await app.send("닫힌 방 메시지");
+  assert.equal(app.writes.length, 0);
+});
+
+test("세 번째 암호를 나중에 등록해도 기존 두 방 연결 유지", async () => {
+  const app = createApp();
+  const hash = pbkdf2Sync("third-test-password", "chat-room-routing:chatting-99de3", 100000, 32, "sha256").toString("hex");
+  app.run(`ADDITIONAL_ROOMS[1].passwordHash = "${hash}"`);
+  assert.equal(await app.run('resolveRoomId("third-test-password")'), `${legacyRoomId}-3`);
+  assert.equal(await app.run('resolveRoomId("second-test-password")'), secondRoomId);
+  assert.equal(await app.run('resolveRoomId("old-pass")'), legacyRoomId);
+});

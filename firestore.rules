@@ -1,0 +1,22 @@
+rules_version = '2';
+service cloud.firestore {
+  match /databases/{database}/documents {
+    match /rooms/{room}/messages/{msg} {
+      // 활성 방만 허용합니다. 추가 방 암호 설정 시 스크립트가 목록을 갱신합니다.
+      function isAllowedRoom() {
+        return room in ['sjchat-private-2026', 'sjchat-private-2026-2'];
+      }
+      allow read: if isAllowedRoom();
+      allow create: if isAllowedRoom()
+                    && request.resource.data.keys().hasOnly(['sender','iv','ct','createdAt'])
+                    && request.resource.data.sender is string
+                    && request.resource.data.iv is string
+                    && request.resource.data.ct is string
+                    && request.resource.data.ct.size() < 20000;
+      allow update, delete: if false;
+    }
+    match /{document=**} {
+      allow read, write: if false;
+    }
+  }
+}

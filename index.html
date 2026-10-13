@@ -223,8 +223,20 @@
       measurementId: "G-GWVN1W60GE"
     };
 
-    // 고정된 방 (사용자에게 노출되지 않음). 이 값 하나만 사용됩니다.
+    // 기존 방의 ID는 이전 메시지의 저장 경로와 암호화에 쓰이므로 유지합니다.
     const ROOM_ID = "sjchat-private-2026";
+    // 등록된 추가 암호만 별도 방으로 연결하고, 나머지는 기존 방으로 연결합니다.
+    // 빈 passwordHash는 미사용 방입니다. 설정: node scripts/configure-room.mjs 3
+    const ADDITIONAL_ROOMS = [
+      {
+        "id": "sjchat-private-2026-2",
+        "passwordHash": "f896ca34bb333fdf6684a9e54bd38bfbbf6aafe50e69e05b30245a7ac75e6e5a"
+      },
+      {
+        "id": "sjchat-private-2026-3",
+        "passwordHash": ""
+      }
+    ];
     // =========================================================================
 
     const isConfigured = !firebaseConfig.apiKey.startsWith("YOUR_");
@@ -239,12 +251,27 @@
     const enc = new TextEncoder();
     const dec = new TextDecoder();
 
-    async function deriveKey(passphrase) {
+    async function resolveRoomId(passphrase) {
+      const baseKey = await crypto.subtle.importKey(
+        "raw", enc.encode(passphrase), "PBKDF2", false, ["deriveBits"]
+      );
+      const bits = await crypto.subtle.deriveBits(
+        {
+          name: "PBKDF2", salt: enc.encode("chat-room-routing:" + firebaseConfig.projectId),
+          iterations: 100000, hash: "SHA-256"
+        },
+        baseKey, 256
+      );
+      const passwordHash = Array.from(new Uint8Array(bits), b => b.toString(16).padStart(2, "0")).join("");
+      return ADDITIONAL_ROOMS.find(room => room.passwordHash === passwordHash)?.id || ROOM_ID;
+    }
+
+    async function deriveKey(passphrase, roomId) {
       const baseKey = await crypto.subtle.importKey(
         "raw", enc.encode(passphrase), "PBKDF2", false, ["deriveKey"]
       );
       return crypto.subtle.deriveKey(
-        { name: "PBKDF2", salt: enc.encode("chat-salt:" + ROOM_ID), iterations: 100000, hash: "SHA-256" },
+        { name: "PBKDF2", salt: enc.encode("chat-salt:" + roomId), iterations: 100000, hash: "SHA-256" },
         baseKey,
         { name: "AES-GCM", length: 256 },
         false,
@@ -275,37 +302,62 @@
     const rowsEl = $("rows");
     const gridEl = document.querySelector(".grid");
 
-    let cryptoKey = null;
-    let myName = "";
+    let currentBook = null;
+    let opening = false;
     let unsubscribe = null;
     let lastSender = null;
 
     async function openBook() {
+      if (opening || currentBook) return;
       const name = $("name").value.trim();
       const pass = $("pass").value;
       if (!isConfigured) { alert("먼저 Firebase 설정을 완료하세요."); return; }
       if (!name || !pass) { alert("사용자와 암호를 입력하세요."); return; }
 
-      myName = name;
-      cryptoKey = await deriveKey(pass);
-      sessionStorage.setItem("book", JSON.stringify({ name, pass }));
+      opening = true;
+      $("enter").disabled = true;
+      try {
+        const roomId = await resolveRoomId(pass);
+        const key = await deriveKey(pass, roomId);
+        const book = { roomId, key, name };
+        currentBook = book;
+        sessionStorage.setItem("book", JSON.stringify({ name, pass }));
 
-      loginEl.style.display = "none";
-      sheetEl.style.display = "flex";
-      $("text").focus();
+        loginEl.style.display = "none";
+        sheetEl.style.display = "flex";
+        $("text").focus();
 
-      const msgsRef = collection(db, "rooms", ROOM_ID, "messages");
-      const q = query(msgsRef, orderBy("createdAt", "asc"), limit(1000));
-      unsubscribe = onSnapshot(q, async (snap) => {
-        for (const change of snap.docChanges()) {
-          if (change.type !== "added") continue;
-          const d = change.doc.data();
-          const text = await decryptText(cryptoKey, d.iv, d.ct);
-          renderRow(d.sender, text, d.createdAt);
-        }
-        renumber();
-        gridEl.scrollTop = gridEl.scrollHeight;
-      });
+        const msgsRef = collection(db, "rooms", book.roomId, "messages");
+        const q = query(msgsRef, orderBy("createdAt", "asc"), limit(1000));
+        let pendingSnapshot = Promise.resolve();
+        const onError = () => {
+          if (currentBook !== book) return;
+          closeBook();
+          alert("문서를 열 수 없습니다. 연결 상태와 문서 권한을 확인하세요.");
+        };
+        unsubscribe = onSnapshot(q, (snap) => {
+          // 복호화 중 닫거나 다른 방을 열어도 이전 방의 행을 추가하지 않습니다.
+          pendingSnapshot = pendingSnapshot.then(async () => {
+            if (currentBook !== book) return;
+            for (const change of snap.docChanges()) {
+              if (change.type !== "added") continue;
+              const d = change.doc.data();
+              const text = await decryptText(book.key, d.iv, d.ct);
+              if (currentBook !== book) return;
+              renderRow(d.sender, text, d.createdAt);
+            }
+            renumber();
+            gridEl.scrollTop = gridEl.scrollHeight;
+          }).catch(onError);
+          return pendingSnapshot;
+        }, onError);
+      } catch {
+        closeBook();
+        alert("문서를 열지 못했습니다. 다시 시도하세요.");
+      } finally {
+        opening = false;
+        $("enter").disabled = false;
+      }
     }
 
     // 시트 행 하나 추가 (행번호 + A열 내용 + 빈 B/C/D 셀)
@@ -352,22 +404,35 @@
     }
 
     async function addRow() {
+      const book = currentBook;
       const input = $("text");
       const text = input.value.trim();
-      if (!text) return;
+      if (!book || !text) return;
       input.value = "";
       input.style.height = "auto";
-      const { iv, ct } = await encryptText(cryptoKey, text);
-      await addDoc(collection(db, "rooms", ROOM_ID, "messages"), {
-        sender: myName, iv, ct, createdAt: serverTimestamp()
-      });
+      try {
+        const { iv, ct } = await encryptText(book.key, text);
+        if (currentBook !== book) return;
+        await addDoc(collection(db, "rooms", book.roomId, "messages"), {
+          sender: book.name, iv, ct, createdAt: serverTimestamp()
+        });
+      } catch {
+        if (currentBook !== book) return;
+        input.value = text + (input.value ? "\n" + input.value : "");
+        alert("입력 내용을 저장하지 못했습니다. 다시 시도하세요.");
+      }
     }
 
     function closeBook() {
+      currentBook = null;
       if (unsubscribe) unsubscribe();
+      unsubscribe = null;
       sessionStorage.removeItem("book");
       rowsEl.innerHTML = "";
       lastSender = null;
+      $("text").value = "";
+      $("text").style.height = "auto";
+      $("pass").value = "";
       sheetEl.style.display = "none";
       loginEl.style.display = "block";
     }

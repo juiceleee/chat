@@ -146,11 +146,17 @@
     display: flex; align-items: center; gap: 10px; padding: 8px 12px; flex-shrink: 0;
     font-size: 12px;
   }
-  .sticker-header select {
-    min-width: 0; max-width: 60%; padding: 6px; border: 1px solid #c5c5c5;
-    border-radius: 4px; background: #fff; color: var(--text); font: inherit;
+  .sticker-tabs { display: flex; gap: 6px; max-width: 65%; overflow-x: auto; flex-shrink: 0; }
+  .sticker-pack-tab {
+    flex: 0 0 44px; height: 44px; padding: 4px; border-radius: 8px;
+    background: transparent; transition: background .15s;
   }
-  .sticker-header button { margin-left: auto; background: none; font-size: 22px; color: #666; }
+  .sticker-pack-tab:hover { background: #f0f0f0; }
+  .sticker-pack-tab[aria-selected="true"] { background: #fff2a8; box-shadow: inset 0 -2px 0 #d8b600; }
+  .sticker-pack-tab:focus-visible { outline: 2px solid var(--xl-green); outline-offset: -2px; }
+  .sticker-pack-tab img { display: block; width: 36px; height: 36px; object-fit: contain; }
+  .sticker-pack-name { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: #555; }
+  .sticker-close { flex-shrink: 0; margin-left: auto; background: none; font-size: 22px; color: #666; }
   .sticker-grid {
     display: grid; grid-template-columns: repeat(6, minmax(0, 1fr)); gap: 6px;
     overflow-y: auto; min-height: 0; padding: 4px 12px; max-width: 660px; width: 100%;
@@ -171,6 +177,8 @@
   }
   @media (max-height: 480px) {
     .sticker-header, .sticker-footer { padding-top: 4px; padding-bottom: 4px; }
+    .sticker-pack-tab { flex-basis: 36px; height: 36px; }
+    .sticker-pack-tab img { width: 28px; height: 28px; }
     .sticker-footer { min-height: 40px; }
     .sticker-footer img { width: 32px; height: 32px; }
   }
@@ -242,11 +250,11 @@
 
     <section id="stickerPanel" class="sticker-panel" aria-label="이모티콘 선택" hidden>
       <div class="sticker-header">
-        <strong>이모티콘</strong>
-        <select id="stickerPack" aria-label="이모티콘 묶음"></select>
-        <button id="stickerClose" aria-label="이모티콘 닫기">×</button>
+        <div id="stickerTabs" class="sticker-tabs" role="tablist" aria-label="이모티콘 묶음"></div>
+        <span id="stickerPackName" class="sticker-pack-name"></span>
+        <button id="stickerClose" class="sticker-close" aria-label="이모티콘 닫기">×</button>
       </div>
-      <div id="stickerGrid" class="sticker-grid"></div>
+      <div id="stickerGrid" class="sticker-grid" role="tabpanel"></div>
       <div class="sticker-footer">
         <img id="stickerPreview" alt="" width="48" height="48" hidden />
         <span id="stickerLabel" aria-live="polite">이모티콘을 선택하세요.</span>
@@ -388,6 +396,8 @@
     let lastSender = null;
     let selectedSticker = null;
     let stickerButtons = [];
+    let activeStickerPack = null;
+    let stickerPackButtons = [];
     const stickerBlobs = new Map();
     const stickerReplayUrls = new Set();
     const stickerReplayRequests = new WeakMap();
@@ -404,15 +414,42 @@
     function configureStickerPicker(book) {
       closeStickerPicker();
       const packs = STICKER_PACKS.filter(pack => pack.roomId === book.roomId);
-      const select = $("stickerPack");
-      select.innerHTML = "";
+      const tabs = $("stickerTabs");
+      tabs.innerHTML = "";
+      stickerPackButtons = [];
+      activeStickerPack = packs[0]?.id || null;
       for (const pack of packs) {
-        const option = document.createElement("option");
-        option.value = pack.id;
-        option.textContent = pack.name;
-        select.appendChild(option);
+        const button = document.createElement("button");
+        button.className = "sticker-pack-tab";
+        button.id = "stickerPack-" + pack.id;
+        button.value = pack.id;
+        button.title = pack.name;
+        button.setAttribute("role", "tab");
+        button.setAttribute("aria-label", pack.name);
+        button.setAttribute("aria-controls", "stickerGrid");
+        const img = document.createElement("img");
+        img.src = STICKERS.get(pack.id + "01").src;
+        img.alt = "";
+        img.width = img.height = 36;
+        img.loading = "lazy";
+        img.decoding = "async";
+        button.appendChild(img);
+        button.addEventListener("click", () => showStickerPack(pack.id));
+        button.addEventListener("keydown", e => {
+          if (button.disabled || !["ArrowLeft", "ArrowRight", "Home", "End"].includes(e.key)) return;
+          e.preventDefault();
+          const index = stickerPackButtons.findIndex(([id]) => id === pack.id);
+          const last = stickerPackButtons.length - 1;
+          const next = e.key === "Home" ? 0 : e.key === "End" ? last
+            : (index + (e.key === "ArrowRight" ? 1 : -1) + last + 1) % (last + 1);
+          const [id, target] = stickerPackButtons[next];
+          showStickerPack(id);
+          target.focus();
+        });
+        tabs.appendChild(button);
+        stickerPackButtons.push([pack.id, button]);
       }
-      select.value = packs[0]?.id || "";
+      updateStickerSelection();
       $("stickerToggle").hidden = packs.length === 0;
     }
 
@@ -455,7 +492,15 @@
         button.setAttribute("aria-pressed", String(selectedSticker?.id === id));
         button.disabled = busy;
       }
-      $("stickerPack").disabled = busy;
+      for (const [id, button] of stickerPackButtons) {
+        button.setAttribute("aria-selected", String(id === activeStickerPack));
+        button.tabIndex = id === activeStickerPack ? 0 : -1;
+        button.disabled = busy;
+      }
+      const pack = STICKER_PACKS.find(pack => pack.id === activeStickerPack);
+      $("stickerPackName").textContent = pack?.name || "";
+      $("stickerPackName").title = pack?.name || "";
+      if (pack) $("stickerGrid").setAttribute("aria-labelledby", "stickerPack-" + pack.id);
       $("stickerSend").disabled = !selectedSticker || busy;
       $("stickerSend").textContent = busy ? "보내는 중…" : "보내기";
       $("stickerPreview").hidden = !selectedSticker;
@@ -474,14 +519,17 @@
       updateStickerSelection();
     }
 
-    function showStickerPack() {
-      if (!isStickerRoom()) return;
+    function showStickerPack(id = activeStickerPack) {
+      const pack = STICKER_PACKS.find(pack => pack.id === id && pack.roomId === currentBook?.roomId);
+      if (!pack || currentBook.sendingSticker || $("stickerPanel").hidden) return;
+      if (activeStickerPack === pack.id && stickerButtons.length) return;
+      activeStickerPack = pack.id;
       selectedSticker = null;
       stickerButtons = [];
       $("stickerGrid").innerHTML = "";
       $("stickerGrid").scrollTop = 0;
       for (const sticker of STICKERS.values()) {
-        if (sticker.pack !== $("stickerPack").value || !getRoomSticker(sticker.id)) continue;
+        if (sticker.pack !== activeStickerPack || !getRoomSticker(sticker.id)) continue;
         const button = document.createElement("button");
         button.className = "sticker-choice";
         button.setAttribute("aria-label", sticker.label);
@@ -669,8 +717,12 @@
       currentBook = null;
       closeStickerPicker();
       $("stickerToggle").hidden = true;
-      $("stickerPack").innerHTML = "";
-      $("stickerPack").value = "";
+      $("stickerTabs").innerHTML = "";
+      $("stickerPackName").textContent = "";
+      $("stickerPackName").title = "";
+      $("stickerGrid").removeAttribute("aria-labelledby");
+      stickerPackButtons = [];
+      activeStickerPack = null;
       if (unsubscribe) unsubscribe();
       unsubscribe = null;
       sessionStorage.removeItem("book");
@@ -715,7 +767,6 @@
     $("close").addEventListener("click", closeBook);
     $("stickerToggle").addEventListener("click", toggleStickerPicker);
     $("stickerClose").addEventListener("click", () => { closeStickerPicker(); $("stickerToggle").focus(); });
-    $("stickerPack").addEventListener("change", showStickerPack);
     $("stickerSend").addEventListener("click", sendSticker);
     rowsEl.addEventListener("click", e => {
       const button = e.target.closest?.(".sticker-replay");

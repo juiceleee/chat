@@ -229,7 +229,7 @@ test("방별 묶음만 표시하고 방 전환 시 선택을 초기화하며 미
   const app = createApp();
   await app.open("old-pass");
   assert.equal(app.get("stickerToggle").hidden, false);
-  assert.deepEqual(app.get("stickerPack").children.map(option => option.value), ["3", "4", "5"]);
+  assert.deepEqual(app.get("stickerTabs").children.map(button => button.value), ["3", "4", "5"]);
   app.run('toggleStickerPicker(); selectSticker("201")');
   await app.run("sendSticker()");
   assert.equal(app.get("stickerPanel").hidden, false);
@@ -240,7 +240,7 @@ test("방별 묶음만 표시하고 방 전환 시 선택을 초기화하며 미
   app.run("closeBook()");
   await app.open("second-test-password");
   assert.equal(app.get("stickerToggle").hidden, false);
-  assert.deepEqual(app.get("stickerPack").children.map(option => option.value), ["2", "1"]);
+  assert.deepEqual(app.get("stickerTabs").children.map(button => button.value), ["2", "1"]);
   app.get("stickerToggle").events.click();
   assert.equal(app.get("stickerGrid").children.length, 24);
   assert.equal(app.get("stickerSend").disabled, true);
@@ -249,18 +249,39 @@ test("방별 묶음만 표시하고 방 전환 시 선택을 초기화하며 미
   assert.equal(app.get("stickerSend").disabled, false);
   assert.equal(app.writes.length, 0);
   assert.equal(app.subscriptions.length, 2);
-  app.get("stickerPack").value = "1";
-  app.get("stickerPack").events.change();
+  const [firstTab, secondTab] = app.get("stickerTabs").children;
+  assert.equal(firstTab.attributes.role, "tab");
+  assert.equal(firstTab.children[0].src, "assets/stickers/wonni-2/01.webp");
+  assert.equal(firstTab.attributes["aria-selected"], "true");
+  firstTab.events.click();
+  assert.equal(app.get("stickerSend").disabled, false);
+  secondTab.events.click();
+  assert.equal(firstTab.attributes["aria-selected"], "false");
+  assert.equal(secondTab.attributes["aria-selected"], "true");
+  assert.equal(secondTab.tabIndex, 0);
+  assert.equal(firstTab.tabIndex, -1);
+  assert.equal(app.get("stickerGrid").attributes["aria-labelledby"], secondTab.id);
+  assert.equal(app.get("stickerPackName").textContent, "리센느 X 안원잘부 시즌1");
   assert.equal(app.get("stickerGrid").children.length, 24);
   assert.equal(app.get("stickerGrid").children[23].children[0].src, "assets/stickers/wonni-s1/24.webp");
   assert.equal(app.get("stickerSend").disabled, true);
+  assert.equal(app.get("stickerPreview").hidden, true);
+  const key = key => ({ key, preventDefault() {} });
+  secondTab.events.keydown(key("ArrowRight"));
+  assert.equal(firstTab.attributes["aria-selected"], "true");
+  firstTab.events.keydown(key("End"));
+  assert.equal(secondTab.attributes["aria-selected"], "true");
+  secondTab.events.keydown(key("Home"));
+  assert.equal(firstTab.attributes["aria-selected"], "true");
+  assert.equal(app.writes.length, 0);
+  assert.equal(app.subscriptions.length, 2);
   app.run("closeBook()");
   assert.equal(app.get("stickerPanel").hidden, true);
   assert.equal(app.get("stickerToggle").hidden, true);
   assert.equal(app.get("stickerGrid").children.length, 0);
   await app.open("old-pass");
-  assert.deepEqual(app.get("stickerPack").children.map(option => option.value), ["3", "4", "5"]);
-  assert.equal(app.get("stickerPack").value, "3");
+  assert.deepEqual(app.get("stickerTabs").children.map(button => button.value), ["3", "4", "5"]);
+  assert.equal(app.run("activeStickerPack"), "3");
   assert.equal(app.run("selectedSticker"), null);
 });
 
@@ -341,8 +362,7 @@ test("기존 방에서 세 묶음을 짧은 암호문으로 전송하고 같은 
     ["524", "bear-and-rabbit-are-in-love", "webp"]
   ]) {
     alice.run("toggleStickerPicker()");
-    alice.get("stickerPack").value = id[0];
-    alice.get("stickerPack").events.change();
+    alice.get("stickerTabs").children.find(button => button.value === id[0]).events.click();
     assert.equal(alice.get("stickerGrid").children.length, id[0] === "5" ? 24 : 32);
     alice.get("stickerGrid").children.at(-1).events.click();
     await alice.get("stickerSend").events.click();
@@ -372,9 +392,11 @@ test("다른 방의 묶음·ID를 지정해도 선택·전송·재생할 수 없
   for (const [pass, forbiddenPack, forbiddenId] of [["old-pass", "2", "201"], ["second-test-password", "5", "501"]]) {
     await app.open(pass);
     app.run("toggleStickerPicker()");
-    app.get("stickerPack").value = forbiddenPack;
-    app.get("stickerPack").events.change();
-    assert.equal(app.get("stickerGrid").children.length, 0);
+    const activePack = app.run("activeStickerPack");
+    const firstImage = app.get("stickerGrid").children[0].children[0].src;
+    app.run(`showStickerPack("${forbiddenPack}")`);
+    assert.equal(app.run("activeStickerPack"), activePack);
+    assert.equal(app.get("stickerGrid").children[0].children[0].src, firstImage);
     app.run(`selectSticker("${forbiddenId}")`);
     assert.equal(app.run("selectedSticker"), null);
     app.run(`selectedSticker = STICKERS.get("${forbiddenId}")`);

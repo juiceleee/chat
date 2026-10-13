@@ -196,7 +196,7 @@ test("알림 켜기에서 권한을 직접 요청하고 허용·차단·미결�
   assert.match(blocked.get("notificationToastText").textContent, /차단되어/);
 });
 
-test("캐시·최초 서버 기록은 조용히 읽고 이후 새 글·이모티콘에는 화면 배너 표시", async () => {
+test("과거 기록은 조용히 읽고 채팅창이 활성 상태여도 새 글·이모티콘은 시스템 배너만 표시", async () => {
   const app = createApp();
   await app.open("second-test-password");
   await app.get("notificationsToggle").events.click();
@@ -206,11 +206,15 @@ test("캐시·최초 서버 기록은 조용히 읽고 이후 새 글·이모티
   await next(snapshot(cached, { fromCache: true }));
   await next(snapshot(null)); // 캐시와 서버 내용이 같아 metadata만 바뀐 경우
   assert.equal(app.get("notificationToast").hidden, true);
+  assert.equal(app.notifications.length, 0);
   for (const text of ["새로운 글", "\u001e201"]) {
+    const before = app.notifications.length;
     await next(snapshot(await incomingMessage(app, text)));
-    assert.equal(app.get("notificationToast").hidden, false);
-    assert.equal(app.get("notificationToastText").textContent, "친구님의 새 메시지가 있습니다.");
-    assert.equal(app.notifications.length, 0);
+    assert.equal(app.get("notificationToast").hidden, true);
+    assert.equal(app.notifications.length, before + 1);
+    assert.equal(app.notifications.at(-1).options.body, "친구님의 새 메시지가 있습니다.");
+    assert.equal(app.notifications.at(-1).options.silent, true);
+    assert.equal(app.context.document.title, "Excel");
     app.run("clearNotifications()");
   }
   assert.match(app.get("rows").children.at(-1).innerHTML, /sticker-message/);
@@ -218,6 +222,7 @@ test("캐시·최초 서버 기록은 조용히 읽고 이후 새 글·이모티
   await app.open("second-test-password");
   await app.subscriptions[1].next(snapshot(await incomingMessage(app, "서버의 과거 기록")));
   assert.equal(app.get("notificationToast").hidden, true);
+  assert.equal(app.notifications.length, 2);
 });
 
 test("백그라운드 배너는 무음·본문 비공개이며 클릭하면 해당 창·최신 행·입력칸으로 이동", async () => {
@@ -232,6 +237,7 @@ test("백그라운드 배너는 무음·본문 비공개이며 클릭하면 해�
   assert.equal(notification.options.body, "같은 이름님의 새 메시지가 있습니다.");
   assert.doesNotMatch(JSON.stringify(notification.options), /비공개 본문/);
   assert.equal(app.context.document.title, "● 새 메시지 · Excel");
+  assert.equal(app.get("notificationToast").hidden, true);
   app.get(".grid").scrollTop = 0;
   const before = app.get("text").focusCalls;
   notification.onclick({ preventDefault() { assert.fail("활성 방은 브라우저 기본 포커스 동작 유지"); } });
@@ -244,8 +250,9 @@ test("백그라운드 배너는 무음·본문 비공개이며 클릭하면 해�
   assert.equal(app.timers.size, 0);
 });
 
-test("화면 배너 클릭으로 초안 유지·입력칸 포커스, 닫기와 자동 숨김 동작", async () => {
+test("시스템 알림 차단 시 대체 화면 배너 클릭·닫기·자동 숨김 및 초안 유지", async () => {
   const app = createApp();
+  app.context.Notification.permission = "denied";
   await app.open("old-pass");
   await enableLiveNotifications(app);
   app.get("text").value = "작성 중인 초안";
@@ -281,9 +288,11 @@ test("내 메시지·중복 수신·오래된 재접속·복호화 실패·알�
   await next(snapshot(await incomingMessage(app, "오래된 기록", "친구", Date.now() - 300000)));
   await next(snapshot({ ...await incomingMessage(app), ct: "invalid" }));
   assert.equal(app.get("notificationToast").hidden, true);
+  assert.equal(app.notifications.length, 0);
   const fresh = await incomingMessage(app);
   await next(snapshot(fresh));
-  assert.equal(app.get("notificationToast").hidden, false);
+  assert.equal(app.get("notificationToast").hidden, true);
+  assert.equal(app.notifications.length, 1);
   app.run("clearNotifications()");
   const rowCount = app.get("rows").children.length;
   await next(snapshot(fresh));
@@ -292,7 +301,7 @@ test("내 메시지·중복 수신·오래된 재접속·복호화 실패·알�
   await app.get("notificationsToggle").events.click();
   await next(snapshot(await incomingMessage(app)));
   assert.equal(app.get("notificationToast").hidden, true);
-  assert.equal(app.notifications.length, 0);
+  assert.equal(app.notifications.length, 1);
 });
 
 test("권한 거부·미지원·시스템 배너 생성 실패 시에도 화면 배너와 채팅 유지", async () => {
@@ -314,6 +323,48 @@ test("권한 거부·미지원·시스템 배너 생성 실패 시에도 화면 
     assert.equal(app.alerts.length, 0);
     assert.equal(app.run("currentBook.roomId"), legacyRoomId);
   }
+});
+
+test("다른 앱을 보는 동안 시스템 알림 생성으로 창 안 배너를 숨겨도 탭 제목은 유지", async () => {
+  const app = createApp();
+  await app.open("old-pass");
+  await enableLiveNotifications(app);
+  // 채팅 탭이 선택되어 있어도 다른 앱으로 포커스가 이동한 상태입니다.
+  app.context.document.hasFocus = () => false;
+  app.run('showNotificationToast("이전 안내")');
+  await app.subscriptions[0].next(snapshot(await incomingMessage(app)));
+  assert.equal(app.notifications.length, 1);
+  assert.equal(app.get("notificationToast").hidden, true);
+  assert.equal(app.timers.size, 0);
+  assert.equal(app.context.document.title, "● 새 메시지 · Excel");
+  app.context.document.hasFocus = () => true;
+  app.windowEvents.focus();
+  assert.equal(app.context.document.title, "Excel");
+  assert.equal(app.notifications[0].closed, true);
+});
+
+test("시스템 알림의 비동기 실패만 화면 배너로 대체하고 오래된 오류는 무시", async () => {
+  const app = createApp();
+  await app.open("old-pass");
+  await enableLiveNotifications(app);
+  app.context.document.visibilityState = "hidden";
+  const next = app.subscriptions[0].next;
+  await next(snapshot(await incomingMessage(app)));
+  const first = app.notifications[0];
+  first.onerror();
+  assert.equal(app.get("notificationToast").hidden, false);
+  assert.equal(app.context.document.title, "● 새 메시지 · Excel");
+  await next(snapshot(await incomingMessage(app)));
+  assert.equal(app.get("notificationToast").hidden, true);
+  first.onerror();
+  assert.equal(app.get("notificationToast").hidden, true);
+  await app.get("notificationsToggle").events.click();
+  app.notifications[1].onerror();
+  assert.equal(app.get("notificationToast").hidden, true);
+  app.run("closeBook()");
+  await app.open("second-test-password");
+  first.onerror();
+  assert.equal(app.get("notificationToast").hidden, true);
 });
 
 test("복호화 중 알림을 끄거나 방을 닫으면 늦은 배너를 표시하지 않음", async () => {

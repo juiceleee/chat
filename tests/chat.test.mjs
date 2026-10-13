@@ -46,10 +46,25 @@ function createApp(source = testScript) {
   const subscriptions = [];
   const writes = [];
   const alerts = [];
+  const downloads = [];
+  const objectUrls = [];
+  const revokedUrls = [];
   for (const id of ["stickerPanel", "stickerToggle", "stickerPreview"]) get(id).hidden = true;
   get("stickerPack").value = "2";
   const context = vm.createContext({
     TextEncoder, TextDecoder, Uint8Array, btoa, atob, crypto: webcrypto,
+    fetch: async (url, options) => {
+      downloads.push({ url, options });
+      return { ok: true, blob: async () => new Blob(["sticker-fixture"], { type: "image/webp" }) };
+    },
+    URL: {
+      createObjectURL: blob => {
+        const url = `blob:sticker-preview-${objectUrls.length + 1}`;
+        objectUrls.push({ url, blob });
+        return url;
+      },
+      revokeObjectURL: url => revokedUrls.push(url)
+    },
     document: { getElementById: get, querySelector: get, createElement: element },
     sessionStorage: storage(), localStorage: storage(),
     alert: message => alerts.push(message),
@@ -67,7 +82,7 @@ function createApp(source = testScript) {
   });
   vm.runInContext(source, context);
   return {
-    context, get, subscriptions, writes, alerts,
+    context, get, subscriptions, writes, alerts, downloads, objectUrls, revokedUrls,
     run: code => vm.runInContext(code, context),
     async open(password, name = "테스트 사용자") {
       get("name").value = name;
@@ -327,4 +342,63 @@ test("이모티콘 암호화 중 방을 닫으면 저장을 취소하고 다음 
   assert.equal(app.run("selectedSticker.id"), "224");
   assert.equal(app.get("stickerPanel").hidden, false);
   assert.equal(app.get("stickerSend").disabled, false);
+});
+
+test("다시 재생은 이미지 파일을 재사용하고 매번 새 로컬 URL로 시작하며 Firebase 요청 없음", async () => {
+  const app = createApp();
+  await app.open("second-test-password");
+  app.context.replayImage = { src: "assets/stickers/wonni-2/01.webp" };
+  await app.run('replaySticker(replayImage, STICKERS.get("201"))');
+  const firstUrl = app.context.replayImage.src;
+  await app.run('replaySticker(replayImage, STICKERS.get("201"))');
+  const secondUrl = app.context.replayImage.src;
+  assert.notEqual(firstUrl, secondUrl);
+  assert.equal(app.downloads.length, 1);
+  assert.equal(app.downloads[0].url, "assets/stickers/wonni-2/01.webp");
+  assert.equal(app.downloads[0].options.cache, "force-cache");
+  assert.equal(app.objectUrls[0].blob, app.objectUrls[1].blob);
+  assert.deepEqual(app.revokedUrls, [firstUrl]);
+  assert.equal(app.writes.length, 0);
+  assert.equal(app.subscriptions.length, 1);
+  app.run("closeBook()");
+  assert.deepEqual(app.revokedUrls, [firstUrl, secondUrl]);
+  assert.equal(app.run("stickerBlobs.size"), 0);
+  await app.open("old-pass");
+  await app.run('replaySticker(replayImage, STICKERS.get("201"))');
+  assert.equal(app.downloads.length, 1);
+});
+
+test("연속 재생 클릭은 마지막 요청만 적용하고 방을 닫으면 늦은 재생을 취소", async () => {
+  const app = createApp();
+  await app.open("second-test-password");
+  let finishDownload;
+  app.context.fetch = () => new Promise(resolve => { finishDownload = resolve; });
+  app.context.replayImage = { src: "original.webp" };
+  const first = app.run('replaySticker(replayImage, STICKERS.get("201"))');
+  const second = app.run('replaySticker(replayImage, STICKERS.get("201"))');
+  finishDownload({ ok: true, blob: async () => new Blob(["fixture"]) });
+  await Promise.all([first, second]);
+  assert.equal(app.objectUrls.length, 1);
+  const late = app.run('replaySticker(replayImage, STICKERS.get("202"))');
+  app.run("closeBook()");
+  finishDownload({ ok: true, blob: async () => new Blob(["fixture"]) });
+  await late;
+  assert.equal(app.objectUrls.length, 1);
+  assert.equal(app.alerts.length, 0);
+});
+
+test("재생 파일 다운로드 실패 시 원래 이미지를 유지하고 다시 클릭하여 재시도 가능", async () => {
+  const app = createApp();
+  await app.open("second-test-password");
+  const originalFetch = app.context.fetch;
+  app.context.fetch = async () => ({ ok: false });
+  app.context.replayImage = { src: "original.webp" };
+  await app.run('replaySticker(replayImage, STICKERS.get("201"))');
+  assert.equal(app.context.replayImage.src, "original.webp");
+  assert.equal(app.alerts.length, 1);
+  assert.equal(app.run("stickerBlobs.size"), 0);
+  app.context.fetch = originalFetch;
+  await app.run('replaySticker(replayImage, STICKERS.get("201"))');
+  assert.match(app.context.replayImage.src, /^blob:/);
+  assert.equal(app.writes.length, 0);
 });
